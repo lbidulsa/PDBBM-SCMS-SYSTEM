@@ -380,6 +380,19 @@ with st.sidebar:
     st.divider()
     menu_selection = st.radio("Navigation Menu:", menu_options_list, index=default_menu_idx)
 
+    # DEVELOPER OWNERSHIP CREDIT BADGE
+    st.divider()
+    st.markdown(
+        """
+        <div style="text-align: center; font-size: 0.8em; color: #6c757d;">
+            💻 <b>System Developer & Architect</b><br>
+            Developed with ❤️ by <br><b>LOUIE B. IDULSA - PDBBM ITO I</b><br>
+            <i>DSWD FO X - PDBBM SCMS © 2026</i>
+        </div>
+        """, 
+        unsafe_allow_html=True
+    )
+
 head_col1, head_col2 = st.columns([2, 7])
 with head_col1:
     render_header_logo(width=180)
@@ -1076,7 +1089,7 @@ elif menu_selection == "📊 Masterlist Database":
                         df_res = pd.read_json(res_json[0], orient="records")
                         if not df_res.empty:
                             row_dict = df_res.iloc[0].to_dict()
-                            del row_dict['id'] # Allow auto-increment ID
+                            del row_dict['id']
                             
                             cols = list(row_dict.keys())
                             vals = list(row_dict.values())
