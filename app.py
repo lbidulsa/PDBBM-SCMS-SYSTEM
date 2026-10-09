@@ -421,7 +421,7 @@ elif menu_selection == "👤 1. Personal & Profiling":
     with st.form("personal_info_form"):
         col_hdr1, col_hdr2 = st.columns(2)
         with col_hdr1:
-            control_no = st.text_input("Control Number (CN):", value=str(c_data.get("control_no", "") or ""))
+            control_no = st.text_input("TFDCC Household ID No.:", value=str(c_data.get("control_no", "") or ""))
         with col_hdr2:
             gis_date = st.text_input("Date (MM-DD-YYYY):", value=str(c_data.get("gis_date", "") or datetime.today().strftime('%m-%d-%Y')))
 
