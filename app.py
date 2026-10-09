@@ -68,7 +68,7 @@ DSWD Field Office X
         return False, str(e)
 
 # ==========================================
-# 3. DATABASE CONNECTIONS & FULL EGIS SCHEMAS
+# 3. DATABASE CONNECTIONS & FULL SCHEMAS
 # ==========================================
 conn = sqlite3.connect('pdbbm_scms.db', check_same_thread=False)
 c = conn.cursor()
@@ -125,6 +125,34 @@ c.execute("""
         email TEXT UNIQUE,
         password TEXT,
         require_change_pass INTEGER DEFAULT 0
+    )
+""")
+
+# DELETION REQUESTS & AUTO-BACKUP ARCHIVE TABLES
+c.execute("""
+    CREATE TABLE IF NOT EXISTS deletion_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        case_id INTEGER,
+        control_no TEXT,
+        client_name TEXT,
+        requested_by TEXT,
+        reason TEXT,
+        request_date TEXT,
+        status TEXT DEFAULT 'PENDING'
+    )
+""")
+
+c.execute("""
+    CREATE TABLE IF NOT EXISTS deleted_cases_archive (
+        archive_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        original_case_id INTEGER,
+        control_no TEXT,
+        client_name TEXT,
+        requested_by TEXT,
+        deletion_reason TEXT,
+        deleted_by TEXT,
+        archived_at TEXT,
+        raw_case_data_json TEXT
     )
 """)
 conn.commit()
@@ -198,7 +226,6 @@ if "redirect_to_module" not in st.session_state:
 
 def export_to_excel_bytes(df):
     output = BytesIO()
-    # Try openpyxl, fallback to default csv/excel handler if missing
     try:
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name='Report_Data')
@@ -222,7 +249,6 @@ def render_header_logo(width=200):
     else:
         st.markdown("## 🕊️ **DSWD FIELD OFFICE X**")
 
-# Helper function to parse date strings
 def parse_date_str(date_str, default_date=date(1995, 1, 1)):
     if not date_str or date_str == "None":
         return default_date
@@ -287,14 +313,13 @@ user_name = u_info.get("name", "User Account")
 PROVINCES_LIST = ["Misamis Oriental", "Misamis Occidental", "Bukidnon", "Lanao del Norte", "Lanao del Sur", "RPMO", "CO"]
 
 def get_beneficiary_options():
-    # STRICT USER BASED ROLE RESTRICTION FOR BENEFICIARY LIST
     if user_role in ["Superuser", "Admin"]:
         query = "SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases ORDER BY id DESC"
         df_c = pd.read_sql_query(query, conn)
     elif user_role == "Team Leader":
         query = "SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(province) = lower(?) ORDER BY id DESC"
         df_c = pd.read_sql_query(query, conn, params=(user_province,))
-    else: # Regular User / Encoder: ONLY their OWN encoded entries
+    else:
         query = "SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(staff_email) = lower(?) OR lower(encoded_by) = lower(?) ORDER BY id DESC"
         df_c = pd.read_sql_query(query, conn, params=(user_email, user_email))
         
@@ -340,6 +365,13 @@ with st.sidebar:
     df_my_cnt = pd.read_sql_query("SELECT id FROM cases WHERE lower(encoded_by) = lower(?) OR lower(staff_email) = lower(?)", conn, params=(user_email, user_email))
     st.info(f"📝 **Your Encoded Entries:** {len(df_my_cnt)} Beneficiaries")
 
+    # SUPERUSER NOTIFICATION BADGE FOR DELETION REQUESTS
+    if user_role in ["Superuser", "Admin"]:
+        c.execute("SELECT COUNT(*) FROM deletion_requests WHERE status = 'PENDING'")
+        pending_del_cnt = c.fetchone()[0]
+        if pending_del_cnt > 0:
+            st.error(f"🔔 **Deletion Requests:** {pending_del_cnt} Pending")
+
     if st.button("🚪 Logout", use_container_width=True):
         st.session_state["authenticated"] = False
         st.session_state["user_info"] = {}
@@ -363,7 +395,6 @@ st.divider()
 if menu_selection == "📊 Executive Dashboard":
     st.subheader("📈 Executive Operations & Field Staff Performance Analytics")
     
-    # Filter dashboard based on role
     if user_role in ["Superuser", "Admin"]:
         df_all_cases = pd.read_sql_query("SELECT * FROM cases", conn)
     elif user_role == "Team Leader":
@@ -428,7 +459,7 @@ elif menu_selection == "👤 1. Personal & Profiling":
         c_data = get_client_record(selected_id)
         st.info(f"✏ Editing Local Database Beneficiary: **{c_data.get('first_name','')} {c_data.get('last_name','')}**")
 
-    # DUPLICATE CHECKER PROMPT (LIVE)
+    # LIVE DUPLICATE CHECKER PROMPT
     control_no_val = st.text_input("TFDCC Household ID No.*:", value=str(c_data.get("control_no", "") or ""))
     
     if control_no_val.strip() != "":
@@ -476,10 +507,8 @@ elif menu_selection == "👤 1. Personal & Profiling":
             region = st.text_input("Region", value=str(c_data.get("region", "Region X") or "Region X"))
         with col3:
             phone_no = st.text_input("Phone No.", value=str(c_data.get("phone_no", "") or ""))
-            # CALENDAR DATE PICKER FOR BIRTHDAY
             bday_picker = st.date_input("Birthdate / Birthday*", value=parse_date_str(c_data.get("birthdate"), date(1995, 1, 1)))
             
-            # AUTO CALCULATE AGE BASED ON BIRTHDAY
             today = date.today()
             calc_age = today.year - bday_picker.year - ((today.month, today.day) < (bday_picker.month, bday_picker.day))
             age = st.number_input("Calculated Age", min_value=0, max_value=120, value=int(calc_age))
@@ -568,9 +597,6 @@ elif menu_selection in [
     else:
         st.info("ℹ️ Standard eGIS Form Template. Select or add a client in Module 1 to bind data.")
 
-    # -------------------------------------------------------------
-    # MODULE 2: FAMILY & HEALTH (AUTO-FILL LOCKED TFDCC HHID & HISTORY)
-    # -------------------------------------------------------------
     if menu_selection == "👨‍👩‍👧‍👦 2. Family & Health":
         st.markdown("##### 🔒 Linked Household Identification")
         st.text_input("Auto-Filled TFDCC Household ID No. (Locked):", value=str(c_data.get("control_no", "NO HH ID LINKED")), disabled=True)
@@ -611,7 +637,6 @@ elif menu_selection in [
                     elif not case_id:
                         st.warning("⚠️ Please select a beneficiary record first before adding family members.")
 
-        # DISPLAY TABLE WITH ENTRY HISTORY
         if case_id:
             df_fam = pd.read_sql_query("SELECT full_name AS 'Full Name', birthdate AS 'Birthdate', age AS 'Age', gender AS 'Gender', relationship AS 'Relationship', civil_status AS 'Civil Status', occupation AS 'Occupation', pwd_status AS 'PWD Status' FROM family_members WHERE case_id = ?", conn, params=(case_id,))
             if not df_fam.empty:
@@ -645,16 +670,12 @@ elif menu_selection in [
                     elif not case_id:
                         st.warning("⚠️ Please select a beneficiary record first before adding family members.")
 
-        # DISPLAY DECEASED TABLE WITH ENTRY HISTORY
         if case_id:
             df_dec = pd.read_sql_query("SELECT full_name AS 'Full Name', relationship AS 'Relationship', date_of_death AS 'Date of Death', reason_of_death AS 'Cause of Death', has_death_cert AS 'Death Cert' FROM deceased_family_members WHERE case_id = ?", conn, params=(case_id,))
             if not df_dec.empty:
                 st.write("##### 📋 Registered Deceased Family Members History:")
                 st.dataframe(df_dec, use_container_width=True, hide_index=True)
 
-    # -------------------------------------------------------------
-    # GENERAL FORM HANDLING FOR MODULES 3 TO 9
-    # -------------------------------------------------------------
     else:
         with st.form("module_general_form"):
             if menu_selection == "📋 3. Prob & Assistance":
@@ -828,55 +849,85 @@ elif menu_selection in [
                     st.info("ℹ️ Form processed. Select or add a client in Module 1 to bind data.")
 
 # ==========================================
-# MASTERLIST DATABASE MODULE (STRICT USER BASED ACCESS)
+# MASTERLIST DATABASE MODULE (WITH REQUEST TO DELETE & AUTO BACKUP)
 # ==========================================
 elif menu_selection == "📊 Masterlist Database":
     st.subheader("📊 Masterlist Case Database & User Entries Viewing Panel")
     appsheet_file = "Appsheet Data 10062026.xlsx"
 
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tabs_list = [
         "📱 Personal Encoding Panel", 
         "🌐 Authorized Regional Masterlist", 
         "📁 Integrated AppSheet Reference Database", 
         "📥 Export Reports"
-    ])
+    ]
+    
+    if user_role in ["Superuser", "Admin"]:
+        tabs_list.append("🗑️ Pending Delete Approvals")
+        tabs_list.append("📦 Deleted Cases Archive")
 
-    with tab1:
+    tabs = st.tabs(tabs_list)
+
+    # TAB 1: PERSONAL ENCODING PANEL & DELETION REQUEST FORM
+    with tabs[0]:
         st.markdown(f"### 👤 Personal Encoding Panel ({user_name})")
         
-        # STRICT USER-BASED ROLE FILTER
         if user_role in ["Superuser", "Admin"]:
             df_my_entries = pd.read_sql_query("SELECT * FROM cases ORDER BY id DESC", conn)
             st.info("👑 **Super User Mode:** Displaying ALL encoded entries across the system.")
         elif user_role == "Team Leader":
             df_my_entries = pd.read_sql_query("SELECT * FROM cases WHERE lower(province) = lower(?) ORDER BY id DESC", conn, params=(user_province,))
             st.info(f"🔰 **Team Leader Mode:** Displaying entries under **{user_province}** jurisdiction.")
-        else: # Regular User / Encoder: Strictly THEIR OWN entries only
+        else:
             df_my_entries = pd.read_sql_query("SELECT * FROM cases WHERE lower(encoded_by) = lower(?) OR lower(staff_email) = lower(?) ORDER BY id DESC", conn, params=(user_email, user_email))
             st.info("🔒 **User Security Restriction:** Displaying STRICTLY your own encoded entries.")
 
         if not df_my_entries.empty:
             st.success(f"📊 Total Personal Authorized Records: **{len(df_my_entries)} Beneficiaries**")
             st.dataframe(df_my_entries, use_container_width=True)
-            my_excel_bytes = export_to_excel_bytes(df_my_entries)
-            st.download_button(
-                label="📥 Download My Encoded Entries (.xlsx)",
-                data=my_excel_bytes,
-                file_name=f"My_Entries_{user_name}_{user_province}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
+            
+            col_d1, col_d2 = st.columns([1, 1])
+            with col_d1:
+                my_excel_bytes = export_to_excel_bytes(df_my_entries)
+                st.download_button(
+                    label="📥 Download My Encoded Entries (.xlsx)",
+                    data=my_excel_bytes,
+                    file_name=f"My_Entries_{user_name}_{user_province}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            
+            # REQUEST TO DELETE FEATURE FOR ENCODERS
+            with col_d2:
+                with st.expander("🗑️ Request to Delete an Entry"):
+                    del_options = {f"ID #{row['id']} - [HHID: {row['control_no'] or 'N/A'}]: {row['first_name']} {row['last_name']}": (row['id'], row['control_no'], f"{row['first_name']} {row['last_name']}") for _, row in df_my_entries.iterrows()}
+                    selected_del = st.selectbox("Select Record to Request Deletion:", list(del_options.keys()))
+                    del_reason = st.text_area("State Reason for Deletion Request*:", placeholder="e.g. Duplicate entry / Incorrect client details")
+                    
+                    if st.button("📩 Submit Deletion Request to Admin", use_container_width=True):
+                        if del_reason.strip():
+                            req_case_id, req_hhid, req_cname = del_options[selected_del]
+                            req_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            c.execute("""
+                                INSERT INTO deletion_requests (case_id, control_no, client_name, requested_by, reason, request_date, status)
+                                VALUES (?, ?, ?, ?, ?, ?, 'PENDING')
+                            """, (req_case_id, req_hhid, req_cname, user_email, del_reason.strip(), req_date))
+                            conn.commit()
+                            st.success(f"📩 Deletion request for ID #{req_case_id} submitted to Super Admin for approval!")
+                        else:
+                            st.error("⚠️ Please provide a reason for the deletion request.")
         else:
             st.info("No recorded beneficiary entries found under your user account.")
 
-    with tab2:
+    # TAB 2: REGIONAL MASTERLIST
+    with tabs[1]:
         query = "SELECT * FROM cases WHERE 1=1"
         params = []
         if user_role not in ["Superuser", "Admin"] and user_province not in ["RPMO", "CO"]:
             if user_role == "Team Leader":
                 query += " AND lower(province) = lower(?)"
                 params.append(user_province)
-            else: # Regular User
+            else:
                 query += " AND (lower(staff_email) = lower(?) OR lower(encoded_by) = lower(?))"
                 params.extend([user_email, user_email])
 
@@ -885,7 +936,8 @@ elif menu_selection == "📊 Masterlist Database":
         st.metric("Total Authorized Masterlist Records", len(df_master))
         st.dataframe(df_master, use_container_width=True)
 
-    with tab3:
+    # TAB 3: APPSHEET MIGRATION TOOLKIT
+    with tabs[2]:
         st.markdown("### 📁 Reference AppSheet Database View & Module Migration")
         if os.path.exists(appsheet_file):
             df_app_ref = pd.read_excel(appsheet_file)
@@ -932,15 +984,14 @@ elif menu_selection == "📊 Masterlist Database":
         else:
             st.info("No external AppSheet reference file loaded.")
 
-    with tab4:
+    # TAB 4: EXPORT REPORTS PORTAL
+    with tabs[3]:
         st.markdown("### 📥 Export Reports Control Portal")
-        
-        # STRICT USER-BASED EXPORT
         if user_role in ["Superuser", "Admin"]:
             df_exp_final = pd.read_sql_query("SELECT * FROM cases", conn)
         elif user_role == "Team Leader":
             df_exp_final = pd.read_sql_query("SELECT * FROM cases WHERE lower(province) = lower(?)", conn, params=(user_province,))
-        else: # Regular User
+        else:
             df_exp_final = pd.read_sql_query("SELECT * FROM cases WHERE lower(encoded_by) = lower(?) OR lower(staff_email) = lower(?)", conn, params=(user_email, user_email))
 
         if len(df_exp_final) == 0:
@@ -955,6 +1006,90 @@ elif menu_selection == "📊 Masterlist Database":
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
+
+    # TAB 5: SUPER ADMIN PENDING DELETE APPROVALS (WITH AUTO-BACKUP)
+    if user_role in ["Superuser", "Admin"]:
+        with tabs[4]:
+            st.markdown("### 🗑️ Super Admin Deletion Request Approvals")
+            df_req = pd.read_sql_query("SELECT id, case_id AS 'Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', reason AS 'Reason for Deletion', request_date AS 'Request Date' FROM deletion_requests WHERE status = 'PENDING' ORDER BY id DESC", conn)
+            
+            if not df_req.empty:
+                st.dataframe(df_req, use_container_width=True)
+                
+                req_dict = {f"Req #{r['id']} - Case #{r['Case ID']} ({r['Client Name']})": (r['id'], r['Case ID'], r['Client Name'], r['Household ID'], r['Requested By'], r['Reason for Deletion']) for _, r in df_req.iterrows()}
+                selected_req_key = st.selectbox("Select Pending Deletion Request to Act On:", list(req_dict.keys()))
+                
+                col_act1, col_act2 = st.columns(2)
+                req_id, c_id, c_name, c_hhid, c_req_by, c_reason = req_dict[selected_req_key]
+                
+                with col_act1:
+                    if st.button("✅ Approve & Auto-Backup to Archive", use_container_width=True):
+                        # 1. Fetch full case row from SQLite
+                        df_raw = pd.read_sql_query("SELECT * FROM cases WHERE id = ?", conn, params=(c_id,))
+                        raw_json = df_raw.to_json(orient="records") if not df_raw.empty else "{}"
+                        
+                        # 2. Backup to deleted_cases_archive
+                        archived_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        c.execute("""
+                            INSERT INTO deleted_cases_archive (original_case_id, control_no, client_name, requested_by, deletion_reason, deleted_by, archived_at, raw_case_data_json)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (c_id, c_hhid, c_name, c_req_by, c_reason, user_email, archived_at, raw_json))
+                        
+                        # 3. Delete from active cases table & family tables
+                        c.execute("DELETE FROM cases WHERE id = ?", (c_id,))
+                        c.execute("DELETE FROM family_members WHERE case_id = ?", (c_id,))
+                        c.execute("DELETE FROM deceased_family_members WHERE case_id = ?", (c_id,))
+                        
+                        # 4. Update request status to APPROVED
+                        c.execute("UPDATE deletion_requests SET status = 'APPROVED' WHERE id = ?", (req_id,))
+                        conn.commit()
+                        st.success(f"✅ Approved! Case #{c_id} ({c_name}) has been backed up to Archive and deleted from active database.")
+                        st.rerun()
+
+                with col_act2:
+                    if st.button("❌ Reject Request", use_container_width=True):
+                        c.execute("UPDATE deletion_requests SET status = 'REJECTED' WHERE id = ?", (req_id,))
+                        conn.commit()
+                        st.info(f"❌ Deletion request for Case #{c_id} was rejected.")
+                        st.rerun()
+            else:
+                st.info("🎉 No pending deletion requests at this time.")
+
+        # TAB 6: DELETED CASES ARCHIVE & RESTORE TOOL
+        with tabs[5]:
+            st.markdown("### 📦 Deleted Cases Recycle Bin & Archive (Auto-Backup)")
+            df_arch = pd.read_sql_query("SELECT archive_id AS 'Archive ID', original_case_id AS 'Original Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', deletion_reason AS 'Reason', deleted_by AS 'Approved By', archived_at AS 'Date Deleted' FROM deleted_cases_archive ORDER BY archive_id DESC", conn)
+            
+            if not df_arch.empty:
+                st.dataframe(df_arch, use_container_width=True)
+                
+                st.divider()
+                st.markdown("#### 🔄 Restore Accidental Deletion")
+                arch_options = {f"Archive #{r['Archive ID']} - {r['Client Name']} (HHID: {r['Household ID']})": r['Archive ID'] for _, r in df_arch.iterrows()}
+                selected_arch_id = st.selectbox("Select Deleted Record to Restore:", list(arch_options.keys()))
+                
+                if st.button("🔄 Restore Selected Record to Active Database", use_container_width=True):
+                    arch_id = arch_options[selected_arch_id]
+                    c.execute("SELECT raw_case_data_json FROM deleted_cases_archive WHERE archive_id = ?", (arch_id,))
+                    res_json = c.fetchone()
+                    if res_json and res_json[0]:
+                        df_res = pd.read_json(res_json[0], orient="records")
+                        if not df_res.empty:
+                            row_dict = df_res.iloc[0].to_dict()
+                            del row_dict['id'] # Allow auto-increment ID
+                            
+                            cols = list(row_dict.keys())
+                            vals = list(row_dict.values())
+                            placeholders = ", ".join(["?"] * len(cols))
+                            col_names = ", ".join(cols)
+                            
+                            c.execute(f"INSERT INTO cases ({col_names}) VALUES ({placeholders})", vals)
+                            c.execute("DELETE FROM deleted_cases_archive WHERE archive_id = ?", (arch_id,))
+                            conn.commit()
+                            st.success("✅ Record restored successfully back to active cases masterlist!")
+                            st.rerun()
+            else:
+                st.info("No archived deleted records found.")
 
 # ==========================================
 # USER MANAGEMENT MODULE
