@@ -27,6 +27,32 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
+# DATA PRIVACY ACT (RA 10173) AUTOMATIC POP-UP MODAL
+# ==========================================
+if "privacy_accepted" not in st.session_state:
+    st.session_state["privacy_accepted"] = False
+
+if hasattr(st, "dialog"):
+    @st.dialog("🔒 DATA PRIVACY ACT COMPLIANCE REMINDER (RA 10173)")
+    def privacy_modal():
+        st.markdown("""
+        **DSWD FIELD OFFICE X • PDBBM SCMS BENEFICIARY MANAGEMENT SYSTEM**
+        
+        Pursuant to **Republic Act No. 10173 (Data Privacy Act of 2012)**:
+        
+        1. **Official Use Only:** All beneficiary information, profiling records, and family data processed in this portal strictly adhere to RA 10173 confidentiality standards.
+        2. **Confidentiality Notice:** Unlawful extraction, downloading, or unauthorized sharing of personal records is strictly prohibited.
+        3. **Security Standards:** All system interactions and encoding sessions are timestamped and logged for audit compliance.
+        """)
+        st.divider()
+        if st.button("✅ I Agree & Proceed to System", use_container_width=True):
+            st.session_state["privacy_accepted"] = True
+            st.rerun()
+
+    if not st.session_state["privacy_accepted"]:
+        privacy_modal()
+
+# ==========================================
 # 2. EMAIL SENDER HELPER
 # ==========================================
 def send_credentials_email(recipient_email, recipient_name, temp_password):
@@ -261,7 +287,7 @@ def parse_date_str(date_str, default_date=date(1995, 1, 1)):
             return default_date
 
 # ==========================================
-# 4. LOGIN PORTAL
+# 4. LOGIN PORTAL (CLEANED - NO CHECKBOX)
 # ==========================================
 if not st.session_state["authenticated"] or not st.session_state.get("user_info"):
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -272,33 +298,27 @@ if not st.session_state["authenticated"] or not st.session_state.get("user_info"
         st.caption("Authorized Field Personnel & Case Managers Registry")
         st.divider()
         
-        st.info("⚖ DATA PRIVACY ACT STATEMENT (RA 10173): By logging in, you agree that data processed strictly adheres to RA 10173 terms.")
-        privacy_agreed = st.checkbox("I agree to the Data Privacy Act Statement & Policy Terms*")
-        
         with st.form("login_form", clear_on_submit=False):
             login_email = st.text_input("User Email Address")
             login_pass = st.text_input("Password", type="password")
             login_submitted = st.form_submit_button("🔒 Login to System", use_container_width=True)
             
             if login_submitted:
-                if not privacy_agreed:
-                    st.error("⚠️ You must check and agree to the Data Privacy Act terms before logging in!")
+                c.execute("SELECT first_name, last_name, province, user_role, email, require_change_pass FROM user_accounts WHERE lower(email) = lower(?) AND password = ?", (login_email.strip(), login_pass.strip()))
+                user_res = c.fetchone()
+                if user_res:
+                    st.session_state["authenticated"] = True
+                    st.session_state["user_info"] = {
+                        "name": f"{user_res[0]} {user_res[1]}",
+                        "province": user_res[2],
+                        "role": user_res[3],
+                        "email": user_res[4],
+                        "must_change_pass": bool(user_res[5])
+                    }
+                    st.success(f"✅ Welcome {user_res[0]}!")
+                    st.rerun()
                 else:
-                    c.execute("SELECT first_name, last_name, province, user_role, email, require_change_pass FROM user_accounts WHERE lower(email) = lower(?) AND password = ?", (login_email.strip(), login_pass.strip()))
-                    user_res = c.fetchone()
-                    if user_res:
-                        st.session_state["authenticated"] = True
-                        st.session_state["user_info"] = {
-                            "name": f"{user_res[0]} {user_res[1]}",
-                            "province": user_res[2],
-                            "role": user_res[3],
-                            "email": user_res[4],
-                            "must_change_pass": bool(user_res[5])
-                        }
-                        st.success(f"✅ Welcome {user_res[0]}!")
-                        st.rerun()
-                    else:
-                        st.error("❌ Invalid Email or Password.")
+                    st.error("❌ Invalid Email or Password.")
     st.stop()
 
 # ==========================================
