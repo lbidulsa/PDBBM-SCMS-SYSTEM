@@ -7,7 +7,7 @@ import os
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime
+from datetime import datetime, date
 from io import BytesIO
 
 # ==========================================
@@ -21,7 +21,9 @@ st.set_page_config(
 )
 
 st.markdown("""
-    
+    <style>
+    .stApp { background-color: #F8F9FA; }
+    </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
@@ -143,7 +145,6 @@ conn.commit()
 
 # KUMPLETONG LISTAHAN SA TANAN FIELDS GIKAN SA FINAL EGIS EXCEL
 required_columns = {
-    # Part I: Personal & Profiling
     "control_no": "TEXT", "gis_date": "TEXT", "client_id": "TEXT", "last_name": "TEXT", "first_name": "TEXT", 
     "middle_name": "TEXT", "ext_name": "TEXT", "alias": "TEXT", "phone_no": "TEXT", "birthdate": "TEXT", 
     "age": "INTEGER", "sex": "TEXT", "civil_status": "TEXT", "crn_number": "TEXT", "vot_status": "TEXT", 
@@ -156,34 +157,23 @@ required_columns = {
     "current_occupation": "TEXT", "motivations_joining": "TEXT", "reasons_leaving": "TEXT", "intentions_motivations": "TEXT", 
     "dialects_spoken": "TEXT", "birth_cert_status": "TEXT", "birth_cert_registry": "TEXT", "marriage_cert_status": "TEXT", 
     "philhealth_status": "TEXT", "philhealth_id": "TEXT", "philhealth_category": "TEXT", "encoded_by": "TEXT", "staff_email": "TEXT", 
-    
-    # Part IV & Annex A1: Problem, Assistance, Infra & Health
     "prob_desc": "TEXT", "assist_requested": "TEXT", "house_ownership": "TEXT", "house_ownership_specify": "TEXT", 
     "housing_condition": "TEXT", "house_renovate_pref": "TEXT", "roofing_material": "TEXT", "walling_material": "TEXT", 
     "flooring_material": "TEXT", "water_source": "TEXT", "sanitation_toilet": "TEXT", "illness_6months": "TEXT", 
     "illness_duration": "TEXT", "illness_severity": "TEXT", "govt_assistance_received": "TEXT", "govt_assistance_usage": "TEXT", 
-    "govt_assistance_impact": "TEXT", 
-    
-    # Annex A2: Agriculture
-    "land_ownership": "TEXT", "land_ownership_type": "TEXT", "land_location": "TEXT", "land_area": "TEXT", 
+    "govt_assistance_impact": "TEXT", "land_ownership": "TEXT", "land_ownership_type": "TEXT", "land_location": "TEXT", "land_area": "TEXT", 
     "agri_equipment": "TEXT", "agri_cultivation_involvement": "TEXT", "agri_sectors": "TEXT", "crops_specify": "TEXT", 
     "livestock_specify": "TEXT", "fisheries_specify": "TEXT", "support_services_specify": "TEXT", "farming_interest": "TEXT", 
     "farming_assistance_needed": "TEXT", "farming_infra_needed": "TEXT", "farming_skills_desired": "TEXT", 
-
-    # Annex A3: Livelihood & Employment
     "vehicles_owned": "TEXT", "occupation_status": "TEXT", "occupation_specify": "TEXT", "desired_future_occ": "TEXT", 
     "coop_membership": "TEXT", "coop_name": "TEXT", "coop_position": "TEXT", "coop_duration": "TEXT", 
     "business_type": "TEXT", "business_duration": "TEXT", "business_goal": "TEXT", "business_assets_owned": "TEXT", 
     "preferred_business": "TEXT", "business_skills_experience": "TEXT", "business_opportunities": "TEXT", 
     "uniformed_service_interest": "TEXT", "cfw_interest": "TEXT", "cfw_preferred_work": "TEXT", 
-
-    # Annex A4: Psychosocial Support
     "mental_health_impact": "TEXT", "psychological_mgmt": "TEXT", "family_rel_change": "TEXT", "support_system": "TEXT", 
     "feeling_safety": "TEXT", "uniformed_personnel_feeling": "TEXT", "threats_perceived": "TEXT", "current_time_spent": "TEXT", 
     "hopes_aspirations": "TEXT", "transformation_challenges": "TEXT", "coping_mechanisms": "TEXT", "personal_growth": "TEXT", 
     "barangay_council_member": "TEXT", "pending_legal_cases": "TEXT", "arrest_history": "TEXT", "message_to_govt": "TEXT", 
-
-    # Annex A5 & A6: Capacity Building & Assessment
     "existing_skills": "TEXT", "skills_acquisition_mode": "TEXT", "skills_training_wish": "TEXT", "skills_training_pref": "TEXT", 
     "formal_education_wish": "TEXT", "als_enrollment_wish": "TEXT", "education_docs_available": "TEXT", 
     "dependents_education_wish": "TEXT", "study_grant_dependents": "TEXT", "skills_training_desired_list": "TEXT", 
@@ -208,8 +198,12 @@ if "redirect_to_module" not in st.session_state:
 
 def export_to_excel_bytes(df):
     output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Report_Data')
+    # Try openpyxl, fallback to default csv/excel handler if missing
+    try:
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Report_Data')
+    except Exception:
+        output.write(df.to_csv(index=False).encode('utf-8'))
     return output.getvalue()
 
 def render_sidebar_logo():
@@ -228,16 +222,25 @@ def render_header_logo(width=200):
     else:
         st.markdown("## 🕊️ **DSWD FIELD OFFICE X**")
 
+# Helper function to parse date strings
+def parse_date_str(date_str, default_date=date(1995, 1, 1)):
+    if not date_str or date_str == "None":
+        return default_date
+    try:
+        return datetime.strptime(str(date_str).strip(), "%Y-%m-%d").date()
+    except Exception:
+        try:
+            return datetime.strptime(str(date_str).strip(), "%m-%d-%Y").date()
+        except Exception:
+            return default_date
+
 # ==========================================
 # 4. LOGIN PORTAL
 # ==========================================
 if not st.session_state["authenticated"] or not st.session_state.get("user_info"):
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        # Gi-direct na nako sa bag-ong logo filename:
         st.image("logo.png", width=600)
-        
-        # Diri nimo pwede ilisan ang Title ug Text kung gusto nimo:
         st.title("🏛️ PDBBM SCMS Login Portal")
         st.markdown("##### **Peace and Development: Buong Bansa Mapayapa - SCMS Beneficiary Management System**")
         st.caption("Authorized Field Personnel & Case Managers Registry")
@@ -284,18 +287,19 @@ user_name = u_info.get("name", "User Account")
 PROVINCES_LIST = ["Misamis Oriental", "Misamis Occidental", "Bukidnon", "Lanao del Norte", "Lanao del Sur", "RPMO", "CO"]
 
 def get_beneficiary_options():
-    if user_role in ["Superuser", "Admin"] or user_province in ["RPMO", "CO"]:
-        query = "SELECT id, client_id, last_name, first_name, province, staff_email FROM cases ORDER BY id DESC"
+    # STRICT USER BASED ROLE RESTRICTION FOR BENEFICIARY LIST
+    if user_role in ["Superuser", "Admin"]:
+        query = "SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases ORDER BY id DESC"
         df_c = pd.read_sql_query(query, conn)
     elif user_role == "Team Leader":
-        query = "SELECT id, client_id, last_name, first_name, province, staff_email FROM cases WHERE lower(province) = lower(?) ORDER BY id DESC"
+        query = "SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(province) = lower(?) ORDER BY id DESC"
         df_c = pd.read_sql_query(query, conn, params=(user_province,))
-    else:
-        query = "SELECT id, client_id, last_name, first_name, province, staff_email FROM cases WHERE lower(staff_email) = lower(?) OR lower(encoded_by) = lower(?) ORDER BY id DESC"
+    else: # Regular User / Encoder: ONLY their OWN encoded entries
+        query = "SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(staff_email) = lower(?) OR lower(encoded_by) = lower(?) ORDER BY id DESC"
         df_c = pd.read_sql_query(query, conn, params=(user_email, user_email))
         
     if not df_c.empty:
-        return {f"ID #{row['id']} [{row['client_id'] or 'No Client ID'}]: {row['first_name']} {row['last_name']} ({row['province']})": row['id'] for _, row in df_c.iterrows()}
+        return {f"ID #{row['id']} [HHID: {row['control_no'] or 'N/A'}]: {row['first_name']} {row['last_name']} ({row['province']})": row['id'] for _, row in df_c.iterrows()}
     return {}
 
 def get_client_record(case_id):
@@ -316,7 +320,6 @@ menu_options_list = [
 if user_role == "Superuser":
     menu_options_list.append("👥 User Management")
 
-# Handle Dynamic Redirect Target if Migrated from AppSheet DB
 default_menu_idx = 0
 if st.session_state.get("redirect_to_module"):
     target_mod = st.session_state["redirect_to_module"]
@@ -335,7 +338,7 @@ with st.sidebar:
     st.caption(f"📧 Email: `{user_email}`")
     
     df_my_cnt = pd.read_sql_query("SELECT id FROM cases WHERE lower(encoded_by) = lower(?) OR lower(staff_email) = lower(?)", conn, params=(user_email, user_email))
-    st.info(f"📝 **Encoded Entries:** {len(df_my_cnt)} Beneficiaries")
+    st.info(f"📝 **Your Encoded Entries:** {len(df_my_cnt)} Beneficiaries")
 
     if st.button("🚪 Logout", use_container_width=True):
         st.session_state["authenticated"] = False
@@ -359,13 +362,20 @@ st.divider()
 # ==========================================
 if menu_selection == "📊 Executive Dashboard":
     st.subheader("📈 Executive Operations & Field Staff Performance Analytics")
-    df_all_cases = pd.read_sql_query("SELECT * FROM cases", conn)
+    
+    # Filter dashboard based on role
+    if user_role in ["Superuser", "Admin"]:
+        df_all_cases = pd.read_sql_query("SELECT * FROM cases", conn)
+    elif user_role == "Team Leader":
+        df_all_cases = pd.read_sql_query("SELECT * FROM cases WHERE lower(province) = lower(?)", conn, params=(user_province,))
+    else:
+        df_all_cases = pd.read_sql_query("SELECT * FROM cases WHERE lower(staff_email) = lower(?) OR lower(encoded_by) = lower(?)", conn, params=(user_email, user_email))
     
     col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
     with col_kpi1:
-        st.metric("Total System Beneficiaries", len(df_all_cases))
+        st.metric("Total Accessible Beneficiaries", len(df_all_cases))
     with col_kpi2:
-        st.metric("Total Active Field Staff/Encoders", len(df_all_cases['staff_email'].dropna().unique()) if not df_all_cases.empty else 0)
+        st.metric("Active Field Staff/Encoders", len(df_all_cases['staff_email'].dropna().unique()) if not df_all_cases.empty else 0)
     with col_kpi3:
         st.metric("Provinces Covered", len(df_all_cases['province'].dropna().unique()) if not df_all_cases.empty else 0)
 
@@ -390,7 +400,7 @@ if menu_selection == "📊 Executive Dashboard":
             st.info("No encoder data recorded.")
 
 # ==========================================
-# MODULE 1: PERSONAL & PROFILING (EGIS SHEET 1)
+# MODULE 1: PERSONAL & PROFILING
 # ==========================================
 elif menu_selection == "👤 1. Personal & Profiling":
     st.subheader("PART I. IDENTIFYING INFORMATION (Impormasyon ng Kinatawan)")
@@ -418,12 +428,22 @@ elif menu_selection == "👤 1. Personal & Profiling":
         c_data = get_client_record(selected_id)
         st.info(f"✏ Editing Local Database Beneficiary: **{c_data.get('first_name','')} {c_data.get('last_name','')}**")
 
+    # DUPLICATE CHECKER PROMPT (LIVE)
+    control_no_val = st.text_input("TFDCC Household ID No.*:", value=str(c_data.get("control_no", "") or ""))
+    
+    if control_no_val.strip() != "":
+        current_id = c_data.get("id", 0)
+        c.execute("SELECT id, first_name, last_name, staff_email FROM cases WHERE lower(control_no) = lower(?) AND id != ?", (control_no_val.strip(), current_id))
+        dup = c.fetchone()
+        if dup:
+            st.error(f"⚠️ **DUPLICATE DETECTED IN ENGLISH:** TFDCC Household ID No. '{control_no_val}' is already registered in the system under **{dup[1]} {dup[2]}** (Encoded by: {dup[3]}). Please verify before saving!")
+
     with st.form("personal_info_form"):
         col_hdr1, col_hdr2 = st.columns(2)
         with col_hdr1:
-            control_no = st.text_input("TFDCC Household ID No.:", value=str(c_data.get("control_no", "") or ""))
+            gis_date_picker = st.date_input("Date:", value=parse_date_str(c_data.get("gis_date"), datetime.today().date()))
         with col_hdr2:
-            gis_date = st.text_input("Date (MM-DD-YYYY):", value=str(c_data.get("gis_date", "") or datetime.today().strftime('%m-%d-%Y')))
+            crn_number = st.text_input("Combatant Reference Number (CRN) / Client ID:", value=str(c_data.get("crn_number", "") or c_data.get("client_id", "") or ""))
 
         st.markdown("##### 🎖️ INVOLVEMENT (Pakikilahok)")
         col_inv1, col_inv2, col_inv3 = st.columns(3)
@@ -435,7 +455,6 @@ elif menu_selection == "👤 1. Personal & Profiling":
             vot_status = st.selectbox("Victim of Terrorism (VoT)", ["No", "Yes"], index=0)
             ciac_status = st.selectbox("Child Involved in Armed Conflict (CIAC)", ["No", "Yes"], index=0)
         with col_inv3:
-            crn_number = st.text_input("Combatant Reference Number (CRN) / Client ID:", value=str(c_data.get("crn_number", "") or c_data.get("client_id", "") or ""))
             rank_role = st.text_input("Rank / Role within Group:", value=str(c_data.get("rank_role", "") or ""))
             duration_involvement = st.text_input("Duration of Involvement:", value=str(c_data.get("duration_involvement", "") or ""))
 
@@ -457,8 +476,14 @@ elif menu_selection == "👤 1. Personal & Profiling":
             region = st.text_input("Region", value=str(c_data.get("region", "Region X") or "Region X"))
         with col3:
             phone_no = st.text_input("Phone No.", value=str(c_data.get("phone_no", "") or ""))
-            birthdate = st.text_input("Birthdate (MM-DD-YYYY)", value=str(c_data.get("birthdate", "") or ""))
-            age = st.number_input("Age", min_value=0, max_value=120, value=int(c_data.get("age", 0) or 0))
+            # CALENDAR DATE PICKER FOR BIRTHDAY
+            bday_picker = st.date_input("Birthdate / Birthday*", value=parse_date_str(c_data.get("birthdate"), date(1995, 1, 1)))
+            
+            # AUTO CALCULATE AGE BASED ON BIRTHDAY
+            today = date.today()
+            calc_age = today.year - bday_picker.year - ((today.month, today.day) < (bday_picker.month, bday_picker.day))
+            age = st.number_input("Calculated Age", min_value=0, max_value=120, value=int(calc_age))
+            
             sex = st.selectbox("Sex*", ["Male", "Female"], index=0 if c_data.get("sex") != "Female" else 1)
             civil_status = st.selectbox("Civil Status", ["Single", "Married", "Widowed", "Separated", "Common Law"], index=0)
         with col4:
@@ -501,17 +526,20 @@ elif menu_selection == "👤 1. Personal & Profiling":
 
         submit_t1 = st.form_submit_button("💾 Save / Update Personal Record", use_container_width=True)
         if submit_t1:
-            if last_name and first_name:
+            birthdate_str = bday_picker.strftime('%Y-%m-%d')
+            gis_date_str = gis_date_picker.strftime('%m-%d-%Y')
+            
+            if last_name and first_name and control_no_val:
                 if selected_option == "-- ADD NEW BENEFICIARY --" and not c_data.get("id"):
                     c.execute("""
                         INSERT INTO cases (control_no, gis_date, client_id, last_name, first_name, middle_name, ext_name, alias, phone_no, birthdate, age, sex, civil_status, crn_number, vot_status, ciac_status, marriage_details, num_wives, wife_order, affiliated_group, fve_specify, pag_specify, rank_role, duration_involvement, purok, barangay, city_muni, province, region, place_of_birth, ethnicity, place_of_integration, physical_disability, health_conditions_maint, education_type, school_name_dates, education_level, occupation_before, current_occupation, motivations_joining, reasons_leaving, intentions_motivations, dialects_spoken, birth_cert_status, birth_cert_registry, marriage_cert_status, philhealth_status, philhealth_id, philhealth_category, staff_email, encoded_by)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (control_no, gis_date, crn_number, last_name, first_name, middle_name, ext_name, alias, phone_no, birthdate, age, sex, civil_status, crn_number, vot_status, ciac_status, marriage_details, num_wives, wife_order, affiliated_group, fve_specify, pag_specify, rank_role, duration_involvement, purok, barangay, city_muni, province, region, place_of_birth, ethnicity, place_of_integration, physical_disability, health_conditions_maint, education_type, school_name_dates, education_level, occupation_before, current_occupation, motivations_joining, reasons_leaving, intentions_motivations, dialects_spoken, birth_cert_status, birth_cert_registry, marriage_cert_status, philhealth_status, philhealth_id, philhealth_category, user_email, user_email))
+                    """, (control_no_val, gis_date_str, crn_number, last_name, first_name, middle_name, ext_name, alias, phone_no, birthdate_str, age, sex, civil_status, crn_number, vot_status, ciac_status, marriage_details, num_wives, wife_order, affiliated_group, fve_specify, pag_specify, rank_role, duration_involvement, purok, barangay, city_muni, province, region, place_of_birth, ethnicity, place_of_integration, physical_disability, health_conditions_maint, education_type, school_name_dates, education_level, occupation_before, current_occupation, motivations_joining, reasons_leaving, intentions_motivations, dialects_spoken, birth_cert_status, birth_cert_registry, marriage_cert_status, philhealth_status, philhealth_id, philhealth_category, user_email, user_email))
                 else:
                     edit_id = c_data.get("id", selected_id)
                     c.execute("""
                         UPDATE cases SET control_no=?, gis_date=?, last_name=?, first_name=?, middle_name=?, ext_name=?, alias=?, phone_no=?, birthdate=?, age=?, sex=?, civil_status=?, crn_number=?, vot_status=?, ciac_status=?, marriage_details=?, num_wives=?, wife_order=?, affiliated_group=?, fve_specify=?, pag_specify=?, rank_role=?, duration_involvement=?, purok=?, barangay=?, city_muni=?, province=?, region=?, place_of_birth=?, ethnicity=?, place_of_integration=?, physical_disability=?, health_conditions_maint=?, education_type=?, school_name_dates=?, education_level=?, occupation_before=?, current_occupation=?, motivations_joining=?, reasons_leaving=?, intentions_motivations=?, dialects_spoken=?, birth_cert_status=?, birth_cert_registry=?, marriage_cert_status=?, philhealth_status=?, philhealth_id=?, philhealth_category=?, staff_email=? WHERE id=?
-                    """, (control_no, gis_date, last_name, first_name, middle_name, ext_name, alias, phone_no, birthdate, age, sex, civil_status, crn_number, vot_status, ciac_status, marriage_details, num_wives, wife_order, affiliated_group, fve_specify, pag_specify, rank_role, duration_involvement, purok, barangay, city_muni, province, region, place_of_birth, ethnicity, place_of_integration, physical_disability, health_conditions_maint, education_type, school_name_dates, education_level, occupation_before, current_occupation, motivations_joining, reasons_leaving, intentions_motivations, dialects_spoken, birth_cert_status, birth_cert_registry, marriage_cert_status, philhealth_status, philhealth_id, philhealth_category, user_email, edit_id))
+                    """, (control_no_val, gis_date_str, last_name, first_name, middle_name, ext_name, alias, phone_no, birthdate_str, age, sex, civil_status, crn_number, vot_status, ciac_status, marriage_details, num_wives, wife_order, affiliated_group, fve_specify, pag_specify, rank_role, duration_involvement, purok, barangay, city_muni, province, region, place_of_birth, ethnicity, place_of_integration, physical_disability, health_conditions_maint, education_type, school_name_dates, education_level, occupation_before, current_occupation, motivations_joining, reasons_leaving, intentions_motivations, dialects_spoken, birth_cert_status, birth_cert_registry, marriage_cert_status, philhealth_status, philhealth_id, philhealth_category, user_email, edit_id))
                 conn.commit()
                 st.success("✅ Beneficiary record updated successfully!")
                 st.session_state["autofill_data"] = {}
@@ -541,9 +569,13 @@ elif menu_selection in [
         st.info("ℹ️ Standard eGIS Form Template. Select or add a client in Module 1 to bind data.")
 
     # -------------------------------------------------------------
-    # MODULE 2: DYNAMIC FAMILY MEMBERS ADD & VIEW LOGIC
+    # MODULE 2: FAMILY & HEALTH (AUTO-FILL LOCKED TFDCC HHID & HISTORY)
     # -------------------------------------------------------------
     if menu_selection == "👨‍👩‍👧‍👦 2. Family & Health":
+        st.markdown("##### 🔒 Linked Household Identification")
+        st.text_input("Auto-Filled TFDCC Household ID No. (Locked):", value=str(c_data.get("control_no", "NO HH ID LINKED")), disabled=True)
+        st.divider()
+
         st.markdown("##### 👨‍👩‍👧‍👦 Living Family Members Composition (Komposisyon ng Pamilya)")
         
         with st.expander("➕ Add New Living Family Member", expanded=True):
@@ -552,7 +584,10 @@ elif menu_selection in [
                 col_f1, col_f2, col_f3 = st.columns(3)
                 with col_f1:
                     f_rel = st.text_input("Relationship to Beneficiary")
-                    f_age = st.number_input("Age", min_value=0, value=0)
+                    f_bday = st.date_input("Family Member Birthdate*", value=date(2000, 1, 1))
+                    today = date.today()
+                    f_age = today.year - f_bday.year - ((today.month, today.day) < (f_bday.month, f_bday.day))
+                    st.number_input("Calculated Age", value=int(f_age), disabled=True)
                     f_gender = st.selectbox("Gender", ["Male", "Female"])
                 with col_f2:
                     f_status = st.selectbox("Civil Status", ["Single", "Married", "Widowed", "Separated"])
@@ -567,20 +602,20 @@ elif menu_selection in [
                 if sub_add_fam:
                     if f_name and case_id:
                         c.execute("""
-                            INSERT INTO family_members (case_id, full_name, age, gender, relationship, civil_status, ethnicity, skills, occupation, pwd_status, maintenance_meds)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (case_id, f_name, f_age, f_gender, f_rel, f_status, f_ethnicity, f_skills, f_occ, f_pwd, f_meds))
+                            INSERT INTO family_members (case_id, full_name, age, birthdate, gender, relationship, civil_status, ethnicity, skills, occupation, pwd_status, maintenance_meds)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (case_id, f_name, f_age, f_bday.strftime('%Y-%m-%d'), f_gender, f_rel, f_status, f_ethnicity, f_skills, f_occ, f_pwd, f_meds))
                         conn.commit()
                         st.success(f"✅ Added family member: {f_name}")
                         st.rerun()
                     elif not case_id:
                         st.warning("⚠️ Please select a beneficiary record first before adding family members.")
 
-        # Display Existing Living Family Members Table
+        # DISPLAY TABLE WITH ENTRY HISTORY
         if case_id:
-            df_fam = pd.read_sql_query("SELECT full_name AS 'Full Name', age AS 'Age', gender AS 'Gender', relationship AS 'Relationship', civil_status AS 'Civil Status', occupation AS 'Occupation', pwd_status AS 'PWD Status' FROM family_members WHERE case_id = ?", conn, params=(case_id,))
+            df_fam = pd.read_sql_query("SELECT full_name AS 'Full Name', birthdate AS 'Birthdate', age AS 'Age', gender AS 'Gender', relationship AS 'Relationship', civil_status AS 'Civil Status', occupation AS 'Occupation', pwd_status AS 'PWD Status' FROM family_members WHERE case_id = ?", conn, params=(case_id,))
             if not df_fam.empty:
-                st.write("##### 📋 Registered Living Family Members:")
+                st.write("##### 📋 Registered Living Family Members History:")
                 st.dataframe(df_fam, use_container_width=True, hide_index=True)
 
         st.divider()
@@ -593,7 +628,7 @@ elif menu_selection in [
                     d_name = st.text_input("Deceased Full Name*")
                     d_rel = st.text_input("Relationship to Client")
                 with col_d2:
-                    d_date = st.text_input("Date of Death (MM-DD-YYYY)")
+                    d_date_picker = st.date_input("Date of Death*", value=date.today())
                     d_reason = st.text_input("Reason / Cause of Death")
                     d_cert = st.selectbox("Has Death Certificate?", ["Yes", "No"])
                 
@@ -603,18 +638,18 @@ elif menu_selection in [
                         c.execute("""
                             INSERT INTO deceased_family_members (case_id, full_name, relationship, date_of_death, reason_of_death, has_death_cert)
                             VALUES (?, ?, ?, ?, ?, ?)
-                        """, (case_id, d_name, d_rel, d_date, d_reason, d_cert))
+                        """, (case_id, d_name, d_rel, d_date_picker.strftime('%Y-%m-%d'), d_reason, d_cert))
                         conn.commit()
                         st.success(f"✅ Added deceased family member: {d_name}")
                         st.rerun()
                     elif not case_id:
                         st.warning("⚠️ Please select a beneficiary record first before adding family members.")
 
-        # Display Existing Deceased Family Members Table
+        # DISPLAY DECEASED TABLE WITH ENTRY HISTORY
         if case_id:
             df_dec = pd.read_sql_query("SELECT full_name AS 'Full Name', relationship AS 'Relationship', date_of_death AS 'Date of Death', reason_of_death AS 'Cause of Death', has_death_cert AS 'Death Cert' FROM deceased_family_members WHERE case_id = ?", conn, params=(case_id,))
             if not df_dec.empty:
-                st.write("##### 📋 Registered Deceased Family Members:")
+                st.write("##### 📋 Registered Deceased Family Members History:")
                 st.dataframe(df_dec, use_container_width=True, hide_index=True)
 
     # -------------------------------------------------------------
@@ -765,7 +800,6 @@ elif menu_selection in [
                 with col_as1:
                     place_of_interview = st.text_input("Place of Interview:", value=str(c_data.get("place_of_interview", "") or ""))
                 with col_as2:
-                    # Locked User Email for Interviewed / Evaluated By
                     interviewed_by = st.text_input("Interviewed / Evaluated By:", value=user_email, disabled=True)
                 with col_as3:
                     approved_by = st.text_input("Reviewed & Approved By:", value=str(c_data.get("approved_by", "") or ""))
@@ -773,7 +807,6 @@ elif menu_selection in [
             sub_m = st.form_submit_button("💾 Save / Update Module Record", use_container_width=True)
             if sub_m:
                 if case_id:
-                    # Update general module fields back into SQLite cases table
                     if menu_selection == "📋 3. Prob & Assistance":
                         c.execute("UPDATE cases SET prob_desc=?, assist_requested=? WHERE id=?", (prob_desc, assist_requested, case_id))
                     elif menu_selection == "🏠 4. Infrastructure & Housing":
@@ -795,7 +828,7 @@ elif menu_selection in [
                     st.info("ℹ️ Form processed. Select or add a client in Module 1 to bind data.")
 
 # ==========================================
-# MASTERLIST DATABASE MODULE
+# MASTERLIST DATABASE MODULE (STRICT USER BASED ACCESS)
 # ==========================================
 elif menu_selection == "📊 Masterlist Database":
     st.subheader("📊 Masterlist Case Database & User Entries Viewing Panel")
@@ -811,21 +844,25 @@ elif menu_selection == "📊 Masterlist Database":
     with tab1:
         st.markdown(f"### 👤 Personal Encoding Panel ({user_name})")
         
-        # SUPERUSER VIEW CONTROL: Superuser/Admin sees ALL entries; Regular Encoders see only THEIR OWN
+        # STRICT USER-BASED ROLE FILTER
         if user_role in ["Superuser", "Admin"]:
             df_my_entries = pd.read_sql_query("SELECT * FROM cases ORDER BY id DESC", conn)
             st.info("👑 **Super User Mode:** Displaying ALL encoded entries across the system.")
-        else:
+        elif user_role == "Team Leader":
+            df_my_entries = pd.read_sql_query("SELECT * FROM cases WHERE lower(province) = lower(?) ORDER BY id DESC", conn, params=(user_province,))
+            st.info(f"🔰 **Team Leader Mode:** Displaying entries under **{user_province}** jurisdiction.")
+        else: # Regular User / Encoder: Strictly THEIR OWN entries only
             df_my_entries = pd.read_sql_query("SELECT * FROM cases WHERE lower(encoded_by) = lower(?) OR lower(staff_email) = lower(?) ORDER BY id DESC", conn, params=(user_email, user_email))
+            st.info("🔒 **User Security Restriction:** Displaying STRICTLY your own encoded entries.")
 
         if not df_my_entries.empty:
-            st.success(f"📊 Total Records Displayed: **{len(df_my_entries)} Beneficiaries**")
+            st.success(f"📊 Total Personal Authorized Records: **{len(df_my_entries)} Beneficiaries**")
             st.dataframe(df_my_entries, use_container_width=True)
             my_excel_bytes = export_to_excel_bytes(df_my_entries)
             st.download_button(
-                label="📥 Download Encoded Entries (Excel)",
+                label="📥 Download My Encoded Entries (.xlsx)",
                 data=my_excel_bytes,
-                file_name=f"Entries_{user_name}_{user_province}.xlsx",
+                file_name=f"My_Entries_{user_name}_{user_province}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
@@ -839,19 +876,19 @@ elif menu_selection == "📊 Masterlist Database":
             if user_role == "Team Leader":
                 query += " AND lower(province) = lower(?)"
                 params.append(user_province)
-            else:
+            else: # Regular User
                 query += " AND (lower(staff_email) = lower(?) OR lower(encoded_by) = lower(?))"
                 params.extend([user_email, user_email])
 
         query += " ORDER BY id DESC"
         df_master = pd.read_sql_query(query, conn, params=params)
-        st.metric("Total Regional Masterlist Records", len(df_master))
+        st.metric("Total Authorized Masterlist Records", len(df_master))
         st.dataframe(df_master, use_container_width=True)
 
     with tab3:
         st.markdown("### 📁 Reference AppSheet Database View & Module Migration")
         if os.path.exists(appsheet_file):
-            df_app_ref = pd.read_excel(appsheet_file, engine='openpyxl')
+            df_app_ref = pd.read_excel(appsheet_file)
             if user_role not in ["Superuser", "Admin"]:
                 staff_cols = [c for c in df_app_ref.columns if 'staff' in c.lower() or 'email' in c.lower() or 'encoder' in c.lower()]
                 if staff_cols:
@@ -859,7 +896,6 @@ elif menu_selection == "📊 Masterlist Database":
             
             st.dataframe(df_app_ref, use_container_width=True)
 
-            # MIGRATION / VIEW & EDIT TOOLKIT
             st.divider()
             st.markdown("#### 🔄 Migrate / Edit Selected Record to Module (1-9)")
             
@@ -879,7 +915,6 @@ elif menu_selection == "📊 Masterlist Database":
                         row_idx = ref_options[selected_ref_row]
                         row_data = df_app_ref.iloc[row_idx].to_dict()
                         
-                        # Populate session state for auto-filling
                         st.session_state["autofill_data"] = {
                             "first_name": str(row_data.get("First Name", row_data.get("first_name", ""))),
                             "last_name": str(row_data.get("Last Name", row_data.get("last_name", ""))),
@@ -891,7 +926,7 @@ elif menu_selection == "📊 Masterlist Database":
                             "control_no": str(row_data.get("Control No", row_data.get("control_no", "")))
                         }
                         
-                        st.session_state["redirect_to_module"] = target_module_choice[:2] # e.g. "1.", "2."
+                        st.session_state["redirect_to_module"] = target_module_choice[:2]
                         st.success(f"✅ Data migrated! Redirecting to Module {target_module_choice}...")
                         st.rerun()
         else:
@@ -899,18 +934,18 @@ elif menu_selection == "📊 Masterlist Database":
 
     with tab4:
         st.markdown("### 📥 Export Reports Control Portal")
-        df_export_check = pd.read_sql_query("SELECT * FROM cases WHERE lower(encoded_by) = lower(?) OR lower(staff_email) = lower(?)", conn, params=(user_email, user_email))
+        
+        # STRICT USER-BASED EXPORT
+        if user_role in ["Superuser", "Admin"]:
+            df_exp_final = pd.read_sql_query("SELECT * FROM cases", conn)
+        elif user_role == "Team Leader":
+            df_exp_final = pd.read_sql_query("SELECT * FROM cases WHERE lower(province) = lower(?)", conn, params=(user_province,))
+        else: # Regular User
+            df_exp_final = pd.read_sql_query("SELECT * FROM cases WHERE lower(encoded_by) = lower(?) OR lower(staff_email) = lower(?)", conn, params=(user_email, user_email))
 
-        if user_role not in ["Superuser", "Admin", "Team Leader"] and len(df_export_check) == 0:
-            st.warning("⚠️ Access Restricted: Account currently has 0 encoded entries. Report download is enabled after submitting entries.")
+        if len(df_exp_final) == 0:
+            st.warning("⚠️ Access Restricted: Account currently has 0 encoded entries under your scope.")
         else:
-            if user_role in ["Superuser", "Admin"]:
-                df_exp_final = pd.read_sql_query("SELECT * FROM cases", conn)
-            elif user_role == "Team Leader":
-                df_exp_final = pd.read_sql_query("SELECT * FROM cases WHERE lower(province) = lower(?)", conn, params=(user_province,))
-            else:
-                df_exp_final = df_export_check
-
             st.success(f"📊 Authorized Export Data Count: **{len(df_exp_final)} Records**")
             excel_bytes = export_to_excel_bytes(df_exp_final)
             st.download_button(
