@@ -53,36 +53,45 @@ if hasattr(st, "dialog"):
         privacy_modal()
 
 # ==========================================
-# 2. EMAIL SENDER HELPER
+# 2. EMAIL SENDER HELPER (DIRECTLY INJECTED GMAIL APP PASS)
 # ==========================================
-def send_credentials_email(recipient_email, recipient_name, temp_password):
-    sender_email = os.environ.get("SMTP_EMAIL", "lbidulsa.fo10@dswd.gov.ph")
-    sender_password = os.environ.get("SMTP_PASSWORD", "")
+def send_credentials_email(recipient_email, recipient_name, temp_password, user_role="User"):
+    # Direct Injected Email Credentials
+    sender_email = "lbidulsa.fo10@dswd.gov.ph"
+    sender_password = "rkgqurmorpvfgktq"  # Google App Password without spaces
     
-    if not sender_password:
-        return False, "SMTP Password not configured in environment variables."
-        
     try:
-        msg = MIMEMultipart()
-        msg['From'] = f"PDBBM SCMS Portal <{sender_email}>"
+        msg = MIMEMultipart('alternative')
+        msg['From'] = f"DSWD FO X PDBBM SCMS Portal <{sender_email}>"
         msg['To'] = recipient_email
-        msg['Subject'] = "PDBBM SCMS Portal Account Credentials"
+        msg['Subject'] = "🔒 Official Account Credentials - PDBBM SCMS Portal"
         
-        body = f"""
-Hello {recipient_name},
+        html_body = f"""
+        <html>
+          <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333333;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #1F4E78; border-radius: 8px;">
+              <h2 style="color: #1F4E78; text-align: center;">🕊️ DSWD Field Office X - PDBBM SCMS Portal</h2>
+              <hr style="border: 0; border-top: 1px solid #1F4E78;">
+              <p>Dear <b>{recipient_name}</b>,</p>
+              <p>Your official user account for the <b>PDBBM SCMS Beneficiary Management System</b> has been successfully configured.</p>
+              
+              <div style="background-color: #F4F6F9; padding: 15px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #1F4E78;">
+                <p style="margin: 5px 0;"><b>Login Email:</b> <code style="font-size: 1.1em; color: #1F4E78;">{recipient_email}</code></p>
+                <p style="margin: 5px 0;"><b>Assigned Role:</b> {user_role}</p>
+                <p style="margin: 5px 0;"><b>Temporary Password:</b> <code style="font-size: 1.2em; color: #C53030; font-weight: bold;">{temp_password}</code></p>
+              </div>
 
-Your user account for the PDBBM SCMS Beneficiary Management System has been configured.
-
-Login Email: {recipient_email}
-Temporary Password: {temp_password}
-
-Please login at the PDBBM SCMS Portal and change your temporary password upon first access.
-
-Best regards,
-PDBBM SCMS System Administrator
-DSWD Field Office X
+              <p><b>Security Notice:</b> Please login to the PDBBM SCMS Portal and change your temporary password upon first system access.</p>
+              <br>
+              <p style="font-size: 0.85em; color: #6c757d; text-align: center;">
+                <i>This is an automated system dispatch. Please do not reply directly to this email.</i><br>
+                <b>DSWD FO X Peace & Development Program © 2026</b>
+              </p>
+            </div>
+          </body>
+        </html>
         """
-        msg.attach(MIMEText(body, 'plain'))
+        msg.attach(MIMEText(html_body, 'html'))
         
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
@@ -1140,36 +1149,42 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
             u_lname = st.text_input("Last Name / Family Name*")
             u_role = st.selectbox("Type of User (Role)", ["User", "Team Leader", "Admin", "Superuser"])
             u_province = st.selectbox("Province Jurisdiction", PROVINCES_LIST)
-            u_email = st.text_input("User Email Address*")
+            u_email = st.text_input("User Email Address*").strip()
             
-            st.text_input("Generated Temporary Password:", value=st.session_state["generated_pass"], disabled=True)
+            curr_gen_pass = st.session_state["generated_pass"]
+            st.text_input("Generated Temporary Password:", value=curr_gen_pass, disabled=True)
             send_via_email = st.checkbox("📧 Send Credentials via Direct Email to User", value=True)
             
             submit_user = st.form_submit_button("➕ Register User", use_container_width=True)
             if submit_user:
                 if u_fname and u_lname and u_email:
                     try:
-                        c.execute("INSERT INTO user_accounts (first_name, last_name, province, user_role, email, password, require_change_pass) VALUES (?, ?, ?, ?, ?, ?, 1)", (u_fname, u_lname, u_province, u_role, u_email.strip(), st.session_state["generated_pass"]))
+                        c.execute("INSERT INTO user_accounts (first_name, last_name, province, user_role, email, password, require_change_pass) VALUES (?, ?, ?, ?, ?, ?, 1)", (u_fname, u_lname, u_province, u_role, u_email, curr_gen_pass))
                         conn.commit()
-                        st.success(f"✅ Registered user: {u_fname} {u_lname}!")
+                        st.success(f"✅ Registered user: {u_fname} {u_lname} ({u_role})!")
                         
                         if send_via_email:
-                            sent_ok, msg_res = send_credentials_email(u_email.strip(), f"{u_fname} {u_lname}", st.session_state["generated_pass"])
+                            sent_ok, msg_res = send_credentials_email(u_email, f"{u_fname} {u_lname}", curr_gen_pass, u_role)
                             if sent_ok:
-                                st.success("📩 Account credentials emailed directly to user!")
+                                st.success(f"📩 Account credentials emailed directly to {u_email}!")
                             else:
-                                st.info(f"ℹ️ User saved locally. Note: {msg_res}")
+                                st.warning(f"⚠️ Email dispatch status: {msg_res}")
+                                st.info(f"🔑 **BACKUP DISPLAY PASS:** `{curr_gen_pass}`")
+                        else:
+                            st.info(f"🔑 **USER TEMPORARY PASS:** `{curr_gen_pass}`")
                                 
                         st.session_state["generated_pass"] = generate_random_password()
                         st.rerun()
                     except sqlite3.IntegrityError:
                         st.error("⚠️ Email address already registered!")
+                else:
+                    st.error("Please fill in First Name, Last Name, and Email Address.")
 
     with col_user_b:
         st.markdown("##### 🔑 Reset User Password (with Live Search)")
         user_search_term = st.text_input("🔍 Search User Name or Email:")
         
-        query_u = "SELECT id, first_name, last_name, email FROM user_accounts WHERE user_role != 'Superuser'"
+        query_u = "SELECT id, first_name, last_name, email, user_role FROM user_accounts WHERE user_role != 'Superuser'"
         params_u = []
         if user_search_term:
             query_u += " AND (lower(first_name) LIKE lower(?) OR lower(last_name) LIKE lower(?) OR lower(email) LIKE lower(?))"
@@ -1180,23 +1195,26 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
         u_list = c.fetchall()
         
         if u_list:
-            u_dict = {f"{r[1]} {r[2]} ({r[3]})": (r[0], r[3], f"{r[1]} {r[2]}") for r in u_list}
+            u_dict = {f"{r[1]} {r[2]} ({r[3]}) - [{r[4]}]": (r[0], r[3], f"{r[1]} {r[2]}", r[4]) for r in u_list}
             selected_reset_user = st.selectbox("Select Filtered User Account:", list(u_dict.keys()))
             send_reset_via_email = st.checkbox("📧 Email New Password Directly to User", value=True, key="reset_mail_chk")
             
             if st.button("🔄 Reset Password Now", use_container_width=True):
-                res_id, res_email, res_full_name = u_dict[selected_reset_user]
+                res_id, res_email, res_full_name, res_role = u_dict[selected_reset_user]
                 new_temp_pass = generate_random_password()
                 c.execute("UPDATE user_accounts SET password = ?, require_change_pass = 1 WHERE id = ?", (new_temp_pass, res_id))
                 conn.commit()
-                st.success(f"✅ New Temporary Password for {res_email}: `{new_temp_pass}`")
+                st.success(f"✅ Reset Password initiated for {res_email}!")
                 
                 if send_reset_via_email:
-                    sent_ok, msg_res = send_credentials_email(res_email, res_full_name, new_temp_pass)
+                    sent_ok, msg_res = send_credentials_email(res_email, res_full_name, new_temp_pass, res_role)
                     if sent_ok:
-                        st.success("📩 Reset password emailed directly to user!")
+                        st.success(f"📩 Reset password emailed directly to {res_email}!")
                     else:
-                        st.info(f"ℹ️ Password reset locally. Note: {msg_res}")
+                        st.warning(f"⚠️ Email dispatch status: {msg_res}")
+                        st.info(f"🔑 **BACKUP RESET PASS:** `{new_temp_pass}`")
+                else:
+                    st.info(f"🔑 **NEW TEMPORARY PASS:** `{new_temp_pass}`")
         else:
             st.warning("No users match your search criteria.")
 
