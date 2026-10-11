@@ -56,7 +56,6 @@ if hasattr(st, "dialog"):
 # 2. EMAIL SENDER HELPER (DIRECTLY INJECTED GMAIL APP PASS)
 # ==========================================
 def send_credentials_email(recipient_email, recipient_name, temp_password, user_role="User"):
-    # Direct Injected Email Credentials
     sender_email = "lbidulsa.fo10@dswd.gov.ph"
     sender_password = "rkgqurmorpvfgktq"  # Google App Password without spaces
     
@@ -163,7 +162,6 @@ c.execute("""
     )
 """)
 
-# DELETION REQUESTS & AUTO-BACKUP ARCHIVE TABLES
 c.execute("""
     CREATE TABLE IF NOT EXISTS deletion_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -206,7 +204,6 @@ else:
     c.execute("UPDATE user_accounts SET password = ?, user_role = 'Superuser' WHERE lower(email) = lower(?)", (SUPERUSER_PASS, SUPERUSER_EMAIL))
 conn.commit()
 
-# KUMPLETONG LISTAHAN SA TANAN FIELDS GIKAN SA FINAL EGIS EXCEL
 required_columns = {
     "control_no": "TEXT", "gis_date": "TEXT", "client_id": "TEXT", "last_name": "TEXT", "first_name": "TEXT", 
     "middle_name": "TEXT", "ext_name": "TEXT", "alias": "TEXT", "phone_no": "TEXT", "birthdate": "TEXT", 
@@ -296,7 +293,7 @@ def parse_date_str(date_str, default_date=date(1995, 1, 1)):
             return default_date
 
 # ==========================================
-# 4. LOGIN PORTAL (CLEANED - NO CHECKBOX)
+# 4. LOGIN PORTAL
 # ==========================================
 if not st.session_state["authenticated"] or not st.session_state.get("user_info"):
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -329,6 +326,32 @@ if not st.session_state["authenticated"] or not st.session_state.get("user_info"
                 else:
                     st.error("❌ Invalid Email or Password.")
     st.stop()
+
+# ==========================================
+# MANDATORY FIRST-LOGIN PASSWORD CHANGE MODAL
+# ==========================================
+if st.session_state.get("user_info", {}).get("must_change_pass"):
+    if hasattr(st, "dialog"):
+        @st.dialog("🔑 MANDATORY PASSWORD CHANGE REQUIRED")
+        def mandatory_change_password_modal():
+            st.warning("⚠️ You are currently using a temporary password. Please configure your new custom password to proceed.")
+            with st.form("must_change_pass_form_scms"):
+                new_p1 = st.text_input("New Password*", type="password")
+                new_p2 = st.text_input("Confirm New Password*", type="password")
+                submit_chg = st.form_submit_button("💾 Save & Proceed to System", use_container_width=True)
+                
+                if submit_chg:
+                    if new_p1 and new_p1 == new_p2:
+                        u_email_curr = st.session_state["user_info"]["email"]
+                        c.execute("UPDATE user_accounts SET password = ?, require_change_pass = 0 WHERE lower(email) = lower(?)", (new_p1, u_email_curr))
+                        conn.commit()
+                        st.session_state["user_info"]["must_change_pass"] = False
+                        st.success("✅ Password changed successfully!")
+                        st.rerun()
+                    else:
+                        st.error("⚠️ Passwords do not match or field is empty.")
+        mandatory_change_password_modal()
+        st.stop()
 
 # ==========================================
 # 5. USER SESSION & SIDEBAR NAVIGATION
@@ -394,7 +417,6 @@ with st.sidebar:
     df_my_cnt = pd.read_sql_query("SELECT id FROM cases WHERE lower(encoded_by) = lower(?) OR lower(staff_email) = lower(?)", conn, params=(user_email, user_email))
     st.info(f"📝 **Your Encoded Entries:** {len(df_my_cnt)} Beneficiaries")
 
-    # SUPERUSER NOTIFICATION BADGE FOR DELETION REQUESTS
     if user_role in ["Superuser", "Admin"]:
         c.execute("SELECT COUNT(*) FROM deletion_requests WHERE status = 'PENDING'")
         pending_del_cnt = c.fetchone()[0]
@@ -405,11 +427,29 @@ with st.sidebar:
         st.session_state["authenticated"] = False
         st.session_state["user_info"] = {}
         st.rerun()
+
+    # SELF-SERVICE CHANGE PASSWORD EXPANDER IN SIDEBAR
+    with st.expander("🔑 Change My Password"):
+        with st.form("self_change_pass_scms"):
+            old_p = st.text_input("Current Password*", type="password")
+            new_p1 = st.text_input("New Password*", type="password")
+            new_p2 = st.text_input("Confirm New Password*", type="password")
+            if st.form_submit_button("Update Password", use_container_width=True):
+                if new_p1 == new_p2 and new_p1 != "":
+                    c.execute("SELECT password FROM user_accounts WHERE lower(email) = lower(?)", (user_email,))
+                    res_p = c.fetchone()
+                    if res_p and res_p[0] == old_p:
+                        c.execute("UPDATE user_accounts SET password = ?, require_change_pass = 0 WHERE lower(email) = lower(?)", (new_p1, user_email))
+                        conn.commit()
+                        st.success("✅ Password successfully updated!")
+                    else:
+                        st.error("❌ Incorrect current password.")
+                else:
+                    st.error("⚠️ Passwords do not match or empty.")
         
     st.divider()
     menu_selection = st.radio("Navigation Menu:", menu_options_list, index=default_menu_idx)
 
-    # DEVELOPER OWNERSHIP CREDIT BADGE
     st.divider()
     st.markdown(
         """
@@ -501,7 +541,6 @@ elif menu_selection == "👤 1. Personal & Profiling":
         c_data = get_client_record(selected_id)
         st.info(f"✏ Editing Local Database Beneficiary: **{c_data.get('first_name','')} {c_data.get('last_name','')}**")
 
-    # LIVE DUPLICATE CHECKER PROMPT
     control_no_val = st.text_input("TFDCC Household ID No.*:", value=str(c_data.get("control_no", "") or ""))
     
     if control_no_val.strip() != "":
@@ -891,7 +930,7 @@ elif menu_selection in [
                     st.info("ℹ️ Form processed. Select or add a client in Module 1 to bind data.")
 
 # ==========================================
-# MASTERLIST DATABASE MODULE (WITH REQUEST TO DELETE & AUTO BACKUP)
+# MASTERLIST DATABASE MODULE
 # ==========================================
 elif menu_selection == "📊 Masterlist Database":
     st.subheader("📊 Masterlist Case Database & User Entries Viewing Panel")
@@ -910,7 +949,6 @@ elif menu_selection == "📊 Masterlist Database":
 
     tabs = st.tabs(tabs_list)
 
-    # TAB 1: PERSONAL ENCODING PANEL & DELETION REQUEST FORM
     with tabs[0]:
         st.markdown(f"### 👤 Personal Encoding Panel ({user_name})")
         
@@ -939,7 +977,6 @@ elif menu_selection == "📊 Masterlist Database":
                     use_container_width=True
                 )
             
-            # REQUEST TO DELETE FEATURE FOR ENCODERS
             with col_d2:
                 with st.expander("🗑️ Request to Delete an Entry"):
                     del_options = {f"ID #{row['id']} - [HHID: {row['control_no'] or 'N/A'}]: {row['first_name']} {row['last_name']}": (row['id'], row['control_no'], f"{row['first_name']} {row['last_name']}") for _, row in df_my_entries.iterrows()}
@@ -961,7 +998,6 @@ elif menu_selection == "📊 Masterlist Database":
         else:
             st.info("No recorded beneficiary entries found under your user account.")
 
-    # TAB 2: REGIONAL MASTERLIST
     with tabs[1]:
         query = "SELECT * FROM cases WHERE 1=1"
         params = []
@@ -978,7 +1014,6 @@ elif menu_selection == "📊 Masterlist Database":
         st.metric("Total Authorized Masterlist Records", len(df_master))
         st.dataframe(df_master, use_container_width=True)
 
-    # TAB 3: APPSHEET MIGRATION TOOLKIT
     with tabs[2]:
         st.markdown("### 📁 Reference AppSheet Database View & Module Migration")
         if os.path.exists(appsheet_file):
@@ -1026,7 +1061,6 @@ elif menu_selection == "📊 Masterlist Database":
         else:
             st.info("No external AppSheet reference file loaded.")
 
-    # TAB 4: EXPORT REPORTS PORTAL
     with tabs[3]:
         st.markdown("### 📥 Export Reports Control Portal")
         if user_role in ["Superuser", "Admin"]:
@@ -1049,7 +1083,6 @@ elif menu_selection == "📊 Masterlist Database":
                 use_container_width=True
             )
 
-    # TAB 5: SUPER ADMIN PENDING DELETE APPROVALS (WITH AUTO-BACKUP)
     if user_role in ["Superuser", "Admin"]:
         with tabs[4]:
             st.markdown("### 🗑️ Super Admin Deletion Request Approvals")
@@ -1066,23 +1099,19 @@ elif menu_selection == "📊 Masterlist Database":
                 
                 with col_act1:
                     if st.button("✅ Approve & Auto-Backup to Archive", use_container_width=True):
-                        # 1. Fetch full case row from SQLite
                         df_raw = pd.read_sql_query("SELECT * FROM cases WHERE id = ?", conn, params=(c_id,))
                         raw_json = df_raw.to_json(orient="records") if not df_raw.empty else "{}"
                         
-                        # 2. Backup to deleted_cases_archive
                         archived_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         c.execute("""
                             INSERT INTO deleted_cases_archive (original_case_id, control_no, client_name, requested_by, deletion_reason, deleted_by, archived_at, raw_case_data_json)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         """, (c_id, c_hhid, c_name, c_req_by, c_reason, user_email, archived_at, raw_json))
                         
-                        # 3. Delete from active cases table & family tables
                         c.execute("DELETE FROM cases WHERE id = ?", (c_id,))
                         c.execute("DELETE FROM family_members WHERE case_id = ?", (c_id,))
                         c.execute("DELETE FROM deceased_family_members WHERE case_id = ?", (c_id,))
                         
-                        # 4. Update request status to APPROVED
                         c.execute("UPDATE deletion_requests SET status = 'APPROVED' WHERE id = ?", (req_id,))
                         conn.commit()
                         st.success(f"✅ Approved! Case #{c_id} ({c_name}) has been backed up to Archive and deleted from active database.")
@@ -1097,7 +1126,6 @@ elif menu_selection == "📊 Masterlist Database":
             else:
                 st.info("🎉 No pending deletion requests at this time.")
 
-        # TAB 6: DELETED CASES ARCHIVE & RESTORE TOOL
         with tabs[5]:
             st.markdown("### 📦 Deleted Cases Recycle Bin & Archive (Auto-Backup)")
             df_arch = pd.read_sql_query("SELECT archive_id AS 'Archive ID', original_case_id AS 'Original Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', deletion_reason AS 'Reason', deleted_by AS 'Approved By', archived_at AS 'Date Deleted' FROM deleted_cases_archive ORDER BY archive_id DESC", conn)
