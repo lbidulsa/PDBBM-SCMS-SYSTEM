@@ -246,13 +246,13 @@ PROVINCES_LIST = ["Misamis Oriental", "Misamis Occidental", "Bukidnon", "Lanao d
 
 def get_beneficiary_options():
     if user_role in ["Superuser", "Admin"]:
-        query = "SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases ORDER BY id DESC"
+        query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases ORDER BY id DESC")
         df_c = pd.read_sql_query(query, engine)
     elif user_role == "Team Leader":
-        query = "SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(province) = lower(:p) ORDER BY id DESC"
+        query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(province) = lower(:p) ORDER BY id DESC")
         df_c = pd.read_sql_query(query, engine, params={"p": user_province})
     else:
-        query = "SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e) ORDER BY id DESC"
+        query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e) ORDER BY id DESC")
         df_c = pd.read_sql_query(query, engine, params={"e": user_email})
         
     if not df_c.empty:
@@ -262,7 +262,7 @@ def get_beneficiary_options():
 def get_client_record(case_id):
     if not case_id:
         return {}
-    df = pd.read_sql_query("SELECT * FROM cases WHERE id = :id", engine, params={"id": case_id})
+    df = pd.read_sql_query(text("SELECT * FROM cases WHERE id = :id"), engine, params={"id": case_id})
     if not df.empty:
         return df.iloc[0].to_dict()
     return {}
@@ -294,7 +294,7 @@ with st.sidebar:
     st.caption(f"🔑 Role: **{user_role}** | 📍 Jurisdiction: **{user_province}**")
     st.caption(f"📧 Email: `{user_email}`")
     
-    df_my_cnt = pd.read_sql_query("SELECT id FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e)", engine, params={"e": user_email})
+    df_my_cnt = pd.read_sql_query(text("SELECT id FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e)"), engine, params={"e": user_email})
     st.info(f"📝 **Your Encoded Entries:** {len(df_my_cnt)} Beneficiaries")
 
     if user_role in ["Superuser", "Admin"]:
@@ -360,11 +360,11 @@ if menu_selection == "📊 Executive Dashboard":
     st.subheader("📈 Executive Operations & Field Staff Performance Analytics")
     
     if user_role in ["Superuser", "Admin"]:
-        df_all_cases = pd.read_sql_query("SELECT * FROM cases", engine)
+        df_all_cases = pd.read_sql_query(text("SELECT * FROM cases"), engine)
     elif user_role == "Team Leader":
-        df_all_cases = pd.read_sql_query("SELECT * FROM cases WHERE lower(province) = lower(:p)", engine, params={"p": user_province})
+        df_all_cases = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(province) = lower(:p)"), engine, params={"p": user_province})
     else:
-        df_all_cases = pd.read_sql_query("SELECT * FROM cases WHERE lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e)", engine, params={"e": user_email})
+        df_all_cases = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e)"), engine, params={"e": user_email})
     
     col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
     with col_kpi1:
@@ -631,7 +631,7 @@ elif menu_selection in [
                         st.warning("⚠️ Please select a beneficiary record first before adding family members.")
 
         if case_id:
-            df_fam = pd.read_sql_query("SELECT full_name AS 'Full Name', birthdate AS 'Birthdate', age AS 'Age', gender AS 'Gender', relationship AS 'Relationship', civil_status AS 'Civil Status', occupation AS 'Occupation', pwd_status AS 'PWD Status' FROM family_members WHERE case_id = :cid", engine, params={"cid": case_id})
+            df_fam = pd.read_sql_query(text("SELECT full_name AS 'Full Name', birthdate AS 'Birthdate', age AS 'Age', gender AS 'Gender', relationship AS 'Relationship', civil_status AS 'Civil Status', occupation AS 'Occupation', pwd_status AS 'PWD Status' FROM family_members WHERE case_id = :cid"), engine, params={"cid": case_id})
             if not df_fam.empty:
                 st.write("##### 📋 Registered Living Family Members History:")
                 st.dataframe(df_fam, use_container_width=True, hide_index=True)
@@ -670,7 +670,7 @@ elif menu_selection in [
                         st.warning("⚠️ Please select a beneficiary record first before adding family members.")
 
         if case_id:
-            df_dec = pd.read_sql_query("SELECT full_name AS 'Full Name', relationship AS 'Relationship', date_of_death AS 'Date of Death', reason_of_death AS 'Cause of Death', has_death_cert AS 'Death Cert' FROM deceased_family_members WHERE case_id = :cid", engine, params={"cid": case_id})
+            df_dec = pd.read_sql_query(text("SELECT full_name AS 'Full Name', relationship AS 'Relationship', date_of_death AS 'Date of Death', reason_of_death AS 'Cause of Death', has_death_cert AS 'Death Cert' FROM deceased_family_members WHERE case_id = :cid"), engine, params={"cid": case_id})
             if not df_dec.empty:
                 st.write("##### 📋 Registered Deceased Family Members History:")
                 st.dataframe(df_dec, use_container_width=True, hide_index=True)
@@ -877,13 +877,13 @@ elif menu_selection == "📊 Masterlist Database":
         st.markdown(f"### 👤 Personal Encoding Panel ({user_name})")
         
         if user_role in ["Superuser", "Admin"]:
-            df_my_entries = pd.read_sql_query("SELECT * FROM cases ORDER BY id DESC", engine)
+            df_my_entries = pd.read_sql_query(text("SELECT * FROM cases ORDER BY id DESC"), engine)
             st.info("👑 **Super User Mode:** Displaying ALL encoded entries across the system.")
         elif user_role == "Team Leader":
-            df_my_entries = pd.read_sql_query("SELECT * FROM cases WHERE lower(province) = lower(:p) ORDER BY id DESC", engine, params={"p": user_province})
+            df_my_entries = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(province) = lower(:p) ORDER BY id DESC"), engine, params={"p": user_province})
             st.info(f"🔰 **Team Leader Mode:** Displaying entries under **{user_province}** jurisdiction.")
         else:
-            df_my_entries = pd.read_sql_query("SELECT * FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e) ORDER BY id DESC", engine, params={"e": user_email})
+            df_my_entries = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e) ORDER BY id DESC"), engine, params={"e": user_email})
             st.info("🔒 **User Security Restriction:** Displaying STRICTLY your own encoded entries.")
 
         if not df_my_entries.empty:
@@ -937,7 +937,7 @@ elif menu_selection == "📊 Masterlist Database":
                 params["e"] = user_email
 
         query += " ORDER BY id DESC"
-        df_master = pd.read_sql_query(query, engine, params=params)
+        df_master = pd.read_sql_query(text(query), engine, params=params)
         st.metric("Total Authorized Masterlist Records", len(df_master))
         st.dataframe(df_master, use_container_width=True)
 
@@ -991,11 +991,11 @@ elif menu_selection == "📊 Masterlist Database":
     with tabs[3]:
         st.markdown("### 📥 Export Reports Control Portal")
         if user_role in ["Superuser", "Admin"]:
-            df_exp_final = pd.read_sql_query("SELECT * FROM cases", engine)
+            df_exp_final = pd.read_sql_query(text("SELECT * FROM cases"), engine)
         elif user_role == "Team Leader":
-            df_exp_final = pd.read_sql_query("SELECT * FROM cases WHERE lower(province) = lower(:p)", engine, params={"p": user_province})
+            df_exp_final = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(province) = lower(:p)"), engine, params={"p": user_province})
         else:
-            df_exp_final = pd.read_sql_query("SELECT * FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e)", engine, params={"e": user_email})
+            df_exp_final = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e)"), engine, params={"e": user_email})
 
         if len(df_exp_final) == 0:
             st.warning("⚠️ Access Restricted: Account currently has 0 encoded entries under your scope.")
@@ -1013,7 +1013,7 @@ elif menu_selection == "📊 Masterlist Database":
     if user_role in ["Superuser", "Admin"]:
         with tabs[4]:
             st.markdown("### 🗑️ Super Admin Deletion Request Approvals")
-            df_req = pd.read_sql_query("SELECT id, case_id AS 'Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', reason AS 'Reason for Deletion', request_date AS 'Request Date' FROM deletion_requests WHERE status = 'PENDING' ORDER BY id DESC", engine)
+            df_req = pd.read_sql_query(text("SELECT id, case_id AS 'Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', reason AS 'Reason for Deletion', request_date AS 'Request Date' FROM deletion_requests WHERE status = 'PENDING' ORDER BY id DESC"), engine)
             
             if not df_req.empty:
                 st.dataframe(df_req, use_container_width=True)
@@ -1026,7 +1026,7 @@ elif menu_selection == "📊 Masterlist Database":
                 
                 with col_act1:
                     if st.button("✅ Approve & Auto-Backup to Archive", use_container_width=True):
-                        df_raw = pd.read_sql_query("SELECT * FROM cases WHERE id = :id", engine, params={"id": c_id})
+                        df_raw = pd.read_sql_query(text("SELECT * FROM cases WHERE id = :id"), engine, params={"id": c_id})
                         raw_json = df_raw.to_json(orient="records") if not df_raw.empty else "{}"
                         
                         archived_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1057,7 +1057,7 @@ elif menu_selection == "📊 Masterlist Database":
 
         with tabs[5]:
             st.markdown("### 📦 Deleted Cases Recycle Bin & Archive (Auto-Backup)")
-            df_arch = pd.read_sql_query("SELECT archive_id AS 'Archive ID', original_case_id AS 'Original Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', deletion_reason AS 'Reason', deleted_by AS 'Approved By', archived_at AS 'Date Deleted' FROM deleted_cases_archive ORDER BY archive_id DESC", engine)
+            df_arch = pd.read_sql_query(text("SELECT archive_id AS 'Archive ID', original_case_id AS 'Original Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', deletion_reason AS 'Reason', deleted_by AS 'Approved By', archived_at AS 'Date Deleted' FROM deleted_cases_archive ORDER BY archive_id DESC"), engine)
             
             if not df_arch.empty:
                 st.dataframe(df_arch, use_container_width=True)
@@ -1179,5 +1179,5 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
             st.warning("No users match your search criteria.")
 
     st.divider()
-    df_users = pd.read_sql_query("SELECT id, first_name || ' ' || last_name AS Name, email AS Email, user_role AS Role, province AS Province FROM user_accounts", engine)
+    df_users = pd.read_sql_query(text("SELECT id, first_name || ' ' || last_name AS Name, email AS Email, user_role AS Role, province AS Province FROM user_accounts"), engine)
     st.dataframe(df_users, use_container_width=True, hide_index=True)
