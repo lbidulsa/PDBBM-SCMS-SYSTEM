@@ -1,6 +1,6 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
+from sqlalchemy import create_engine, text
 import secrets
 import string
 import os
@@ -53,11 +53,11 @@ if hasattr(st, "dialog"):
         privacy_modal()
 
 # ==========================================
-# 2. EMAIL SENDER HELPER (DIRECTLY INJECTED GMAIL APP PASS)
+# 2. EMAIL SENDER HELPER
 # ==========================================
 def send_credentials_email(recipient_email, recipient_name, temp_password, user_role="User"):
     sender_email = "lbidulsa.fo10@dswd.gov.ph"
-    sender_password = "rkgqurmorpvfgktq"  # Google App Password without spaces
+    sender_password = "rkgqurmorpvfgktq"
     
     try:
         msg = MIMEMultipart('alternative')
@@ -102,150 +102,23 @@ def send_credentials_email(recipient_email, recipient_name, temp_password, user_
         return False, str(e)
 
 # ==========================================
-# 3. DATABASE CONNECTIONS & FULL SCHEMAS
+# 3. DATABASE CONNECTION ENGINE (SUPABASE POSTGRESQL)
 # ==========================================
-conn = sqlite3.connect('pdbbm_scms.db', check_same_thread=False)
-c = conn.cursor()
+DEFAULT_DB_URL = "postgresql+psycopg2://postgres.oxyvjstdncnnefbkilaa:5GLJZg5tWE28Wud9@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres"
 
-c.execute("CREATE TABLE IF NOT EXISTS cases (id INTEGER PRIMARY KEY AUTOINCREMENT)")
+@st.cache_resource
+def get_db_engine():
+    try:
+        db_url = st.secrets.get("SUPABASE_URL", DEFAULT_DB_URL)
+    except Exception:
+        db_url = DEFAULT_DB_URL
+    return create_engine(db_url, pool_pre_ping=True)
 
-c.execute("""
-    CREATE TABLE IF NOT EXISTS family_members (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        case_id INTEGER,
-        full_name TEXT,
-        age INTEGER,
-        birthdate TEXT,
-        gender TEXT,
-        relationship TEXT,
-        civil_status TEXT,
-        ethnicity TEXT,
-        skills TEXT,
-        occupation TEXT,
-        monthly_income REAL,
-        birth_cert TEXT,
-        pwd_status TEXT,
-        disability_kind TEXT,
-        maintenance_meds TEXT,
-        philhealth_status TEXT,
-        philhealth_id TEXT,
-        govt_programs TEXT,
-        attending_school TEXT,
-        education_details TEXT,
-        living_in_household TEXT
-    )
-""")
-
-c.execute("""
-    CREATE TABLE IF NOT EXISTS deceased_family_members (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        case_id INTEGER,
-        full_name TEXT,
-        relationship TEXT,
-        date_of_death TEXT,
-        reason_of_death TEXT,
-        has_death_cert TEXT
-    )
-""")
-
-c.execute("""
-    CREATE TABLE IF NOT EXISTS user_accounts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        first_name TEXT,
-        middle_name TEXT,
-        last_name TEXT,
-        province TEXT,
-        user_role TEXT,
-        email TEXT UNIQUE,
-        password TEXT,
-        require_change_pass INTEGER DEFAULT 0
-    )
-""")
-
-c.execute("""
-    CREATE TABLE IF NOT EXISTS deletion_requests (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        case_id INTEGER,
-        control_no TEXT,
-        client_name TEXT,
-        requested_by TEXT,
-        reason TEXT,
-        request_date TEXT,
-        status TEXT DEFAULT 'PENDING'
-    )
-""")
-
-c.execute("""
-    CREATE TABLE IF NOT EXISTS deleted_cases_archive (
-        archive_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        original_case_id INTEGER,
-        control_no TEXT,
-        client_name TEXT,
-        requested_by TEXT,
-        deletion_reason TEXT,
-        deleted_by TEXT,
-        archived_at TEXT,
-        raw_case_data_json TEXT
-    )
-""")
-conn.commit()
+engine = get_db_engine()
 
 def generate_random_password(length=10):
     chars = string.ascii_letters + string.digits + "!@#$%&*"
     return ''.join(secrets.choice(chars) for _ in range(length))
-
-SUPERUSER_EMAIL = "lbidulsa.fo10@dswd.gov.ph"
-SUPERUSER_PASS = "P@ssw0rd"
-
-c.execute("SELECT COUNT(*) FROM user_accounts WHERE lower(email) = lower(?)", (SUPERUSER_EMAIL,))
-if c.fetchone()[0] == 0:
-    c.execute("INSERT INTO user_accounts (first_name, middle_name, last_name, province, user_role, email, password, require_change_pass) VALUES ('Super', 'Dev', 'Admin', 'RPMO', 'Superuser', ?, ?, 0)", (SUPERUSER_EMAIL, SUPERUSER_PASS))
-else:
-    c.execute("UPDATE user_accounts SET password = ?, user_role = 'Superuser' WHERE lower(email) = lower(?)", (SUPERUSER_PASS, SUPERUSER_EMAIL))
-conn.commit()
-
-required_columns = {
-    "control_no": "TEXT", "gis_date": "TEXT", "client_id": "TEXT", "last_name": "TEXT", "first_name": "TEXT", 
-    "middle_name": "TEXT", "ext_name": "TEXT", "alias": "TEXT", "phone_no": "TEXT", "birthdate": "TEXT", 
-    "age": "INTEGER", "sex": "TEXT", "civil_status": "TEXT", "crn_number": "TEXT", "vot_status": "TEXT", 
-    "ciac_status": "TEXT", "marriage_details": "TEXT", "num_wives": "INTEGER", "wife_order": "TEXT", 
-    "affiliated_group": "TEXT", "fve_specify": "TEXT", "pag_specify": "TEXT", "rank_role": "TEXT", 
-    "duration_involvement": "TEXT", "activity_locations": "TEXT", "activity_types": "TEXT", "purok": "TEXT", 
-    "barangay": "TEXT", "city_muni": "TEXT", "province": "TEXT", "region": "TEXT", "place_of_birth": "TEXT", 
-    "ethnicity": "TEXT", "place_of_integration": "TEXT", "physical_disability": "TEXT", "health_conditions_maint": "TEXT", 
-    "education_type": "TEXT", "school_name_dates": "TEXT", "education_level": "TEXT", "occupation_before": "TEXT", 
-    "current_occupation": "TEXT", "motivations_joining": "TEXT", "reasons_leaving": "TEXT", "intentions_motivations": "TEXT", 
-    "dialects_spoken": "TEXT", "birth_cert_status": "TEXT", "birth_cert_registry": "TEXT", "marriage_cert_status": "TEXT", 
-    "philhealth_status": "TEXT", "philhealth_id": "TEXT", "philhealth_category": "TEXT", "encoded_by": "TEXT", "staff_email": "TEXT", 
-    "prob_desc": "TEXT", "assist_requested": "TEXT", "house_ownership": "TEXT", "house_ownership_specify": "TEXT", 
-    "housing_condition": "TEXT", "house_renovate_pref": "TEXT", "roofing_material": "TEXT", "walling_material": "TEXT", 
-    "flooring_material": "TEXT", "water_source": "TEXT", "sanitation_toilet": "TEXT", "illness_6months": "TEXT", 
-    "illness_duration": "TEXT", "illness_severity": "TEXT", "govt_assistance_received": "TEXT", "govt_assistance_usage": "TEXT", 
-    "govt_assistance_impact": "TEXT", "land_ownership": "TEXT", "land_ownership_type": "TEXT", "land_location": "TEXT", "land_area": "TEXT", 
-    "agri_equipment": "TEXT", "agri_cultivation_involvement": "TEXT", "agri_sectors": "TEXT", "crops_specify": "TEXT", 
-    "livestock_specify": "TEXT", "fisheries_specify": "TEXT", "support_services_specify": "TEXT", "farming_interest": "TEXT", 
-    "farming_assistance_needed": "TEXT", "farming_infra_needed": "TEXT", "farming_skills_desired": "TEXT", 
-    "vehicles_owned": "TEXT", "occupation_status": "TEXT", "occupation_specify": "TEXT", "desired_future_occ": "TEXT", 
-    "coop_membership": "TEXT", "coop_name": "TEXT", "coop_position": "TEXT", "coop_duration": "TEXT", 
-    "business_type": "TEXT", "business_duration": "TEXT", "business_goal": "TEXT", "business_assets_owned": "TEXT", 
-    "preferred_business": "TEXT", "business_skills_experience": "TEXT", "business_opportunities": "TEXT", 
-    "uniformed_service_interest": "TEXT", "cfw_interest": "TEXT", "cfw_preferred_work": "TEXT", 
-    "mental_health_impact": "TEXT", "psychological_mgmt": "TEXT", "family_rel_change": "TEXT", "support_system": "TEXT", 
-    "feeling_safety": "TEXT", "uniformed_personnel_feeling": "TEXT", "threats_perceived": "TEXT", "current_time_spent": "TEXT", 
-    "hopes_aspirations": "TEXT", "transformation_challenges": "TEXT", "coping_mechanisms": "TEXT", "personal_growth": "TEXT", 
-    "barangay_council_member": "TEXT", "pending_legal_cases": "TEXT", "arrest_history": "TEXT", "message_to_govt": "TEXT", 
-    "existing_skills": "TEXT", "skills_acquisition_mode": "TEXT", "skills_training_wish": "TEXT", "skills_training_pref": "TEXT", 
-    "formal_education_wish": "TEXT", "als_enrollment_wish": "TEXT", "education_docs_available": "TEXT", 
-    "dependents_education_wish": "TEXT", "study_grant_dependents": "TEXT", "skills_training_desired_list": "TEXT", 
-    "skills_training_dependents": "TEXT", "sw_assessment": "TEXT", "place_of_interview": "TEXT", "interviewed_by": "TEXT", "approved_by": "TEXT"
-}
-
-c.execute("PRAGMA table_info(cases)")
-existing_cols = [row[1] for row in c.fetchall()]
-for col_name, col_type in required_columns.items():
-    if col_name not in existing_cols:
-        c.execute(f"ALTER TABLE cases ADD COLUMN {col_name} {col_type}")
-conn.commit()
 
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
@@ -282,7 +155,7 @@ def render_header_logo(width=200):
         st.markdown("## 🕊️ **DSWD FIELD OFFICE X**")
 
 def parse_date_str(date_str, default_date=date(1995, 1, 1)):
-    if not date_str or date_str == "None":
+    if not date_str or str(date_str) == "None":
         return default_date
     try:
         return datetime.strptime(str(date_str).strip(), "%Y-%m-%d").date()
@@ -310,8 +183,12 @@ if not st.session_state["authenticated"] or not st.session_state.get("user_info"
             login_submitted = st.form_submit_button("🔒 Login to System", use_container_width=True)
             
             if login_submitted:
-                c.execute("SELECT first_name, last_name, province, user_role, email, require_change_pass FROM user_accounts WHERE lower(email) = lower(?) AND password = ?", (login_email.strip(), login_pass.strip()))
-                user_res = c.fetchone()
+                with engine.connect() as conn:
+                    user_res = conn.execute(
+                        text("SELECT first_name, last_name, province, user_role, email, require_change_pass FROM user_accounts WHERE lower(email) = lower(:e) AND password = :p"),
+                        {"e": login_email.strip(), "p": login_pass.strip()}
+                    ).fetchone()
+                
                 if user_res:
                     st.session_state["authenticated"] = True
                     st.session_state["user_info"] = {
@@ -343,8 +220,11 @@ if st.session_state.get("user_info", {}).get("must_change_pass"):
                 if submit_chg:
                     if new_p1 and new_p1 == new_p2:
                         u_email_curr = st.session_state["user_info"]["email"]
-                        c.execute("UPDATE user_accounts SET password = ?, require_change_pass = 0 WHERE lower(email) = lower(?)", (new_p1, u_email_curr))
-                        conn.commit()
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text("UPDATE user_accounts SET password = :p, require_change_pass = 0 WHERE lower(email) = lower(:e)"),
+                                {"p": new_p1, "e": u_email_curr}
+                            )
                         st.session_state["user_info"]["must_change_pass"] = False
                         st.success("✅ Password changed successfully!")
                         st.rerun()
@@ -367,13 +247,13 @@ PROVINCES_LIST = ["Misamis Oriental", "Misamis Occidental", "Bukidnon", "Lanao d
 def get_beneficiary_options():
     if user_role in ["Superuser", "Admin"]:
         query = "SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases ORDER BY id DESC"
-        df_c = pd.read_sql_query(query, conn)
+        df_c = pd.read_sql_query(query, engine)
     elif user_role == "Team Leader":
-        query = "SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(province) = lower(?) ORDER BY id DESC"
-        df_c = pd.read_sql_query(query, conn, params=(user_province,))
+        query = "SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(province) = lower(:p) ORDER BY id DESC"
+        df_c = pd.read_sql_query(query, engine, params={"p": user_province})
     else:
-        query = "SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(staff_email) = lower(?) OR lower(encoded_by) = lower(?) ORDER BY id DESC"
-        df_c = pd.read_sql_query(query, conn, params=(user_email, user_email))
+        query = "SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e) ORDER BY id DESC"
+        df_c = pd.read_sql_query(query, engine, params={"e": user_email})
         
     if not df_c.empty:
         return {f"ID #{row['id']} [HHID: {row['control_no'] or 'N/A'}]: {row['first_name']} {row['last_name']} ({row['province']})": row['id'] for _, row in df_c.iterrows()}
@@ -382,7 +262,7 @@ def get_beneficiary_options():
 def get_client_record(case_id):
     if not case_id:
         return {}
-    df = pd.read_sql_query("SELECT * FROM cases WHERE id = ?", conn, params=(case_id,))
+    df = pd.read_sql_query("SELECT * FROM cases WHERE id = :id", engine, params={"id": case_id})
     if not df.empty:
         return df.iloc[0].to_dict()
     return {}
@@ -414,21 +294,23 @@ with st.sidebar:
     st.caption(f"🔑 Role: **{user_role}** | 📍 Jurisdiction: **{user_province}**")
     st.caption(f"📧 Email: `{user_email}`")
     
-    df_my_cnt = pd.read_sql_query("SELECT id FROM cases WHERE lower(encoded_by) = lower(?) OR lower(staff_email) = lower(?)", conn, params=(user_email, user_email))
+    df_my_cnt = pd.read_sql_query("SELECT id FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e)", engine, params={"e": user_email})
     st.info(f"📝 **Your Encoded Entries:** {len(df_my_cnt)} Beneficiaries")
 
     if user_role in ["Superuser", "Admin"]:
-        c.execute("SELECT COUNT(*) FROM deletion_requests WHERE status = 'PENDING'")
-        pending_del_cnt = c.fetchone()[0]
-        if pending_del_cnt > 0:
-            st.error(f"🔔 **Deletion Requests:** {pending_del_cnt} Pending")
+        try:
+            with engine.connect() as conn:
+                pending_del_cnt = conn.execute(text("SELECT COUNT(*) FROM deletion_requests WHERE status = 'PENDING'")).fetchone()[0]
+            if pending_del_cnt > 0:
+                st.error(f"🔔 **Deletion Requests:** {pending_del_cnt} Pending")
+        except Exception:
+            pass
 
     if st.button("🚪 Logout", use_container_width=True):
         st.session_state["authenticated"] = False
         st.session_state["user_info"] = {}
         st.rerun()
 
-    # SELF-SERVICE CHANGE PASSWORD EXPANDER IN SIDEBAR
     with st.expander("🔑 Change My Password"):
         with st.form("self_change_pass_scms"):
             old_p = st.text_input("Current Password*", type="password")
@@ -436,11 +318,11 @@ with st.sidebar:
             new_p2 = st.text_input("Confirm New Password*", type="password")
             if st.form_submit_button("Update Password", use_container_width=True):
                 if new_p1 == new_p2 and new_p1 != "":
-                    c.execute("SELECT password FROM user_accounts WHERE lower(email) = lower(?)", (user_email,))
-                    res_p = c.fetchone()
+                    with engine.connect() as conn:
+                        res_p = conn.execute(text("SELECT password FROM user_accounts WHERE lower(email) = lower(:e)"), {"e": user_email}).fetchone()
                     if res_p and res_p[0] == old_p:
-                        c.execute("UPDATE user_accounts SET password = ?, require_change_pass = 0 WHERE lower(email) = lower(?)", (new_p1, user_email))
-                        conn.commit()
+                        with engine.begin() as conn:
+                            conn.execute(text("UPDATE user_accounts SET password = :p, require_change_pass = 0 WHERE lower(email) = lower(:e)"), {"p": new_p1, "e": user_email})
                         st.success("✅ Password successfully updated!")
                     else:
                         st.error("❌ Incorrect current password.")
@@ -478,11 +360,11 @@ if menu_selection == "📊 Executive Dashboard":
     st.subheader("📈 Executive Operations & Field Staff Performance Analytics")
     
     if user_role in ["Superuser", "Admin"]:
-        df_all_cases = pd.read_sql_query("SELECT * FROM cases", conn)
+        df_all_cases = pd.read_sql_query("SELECT * FROM cases", engine)
     elif user_role == "Team Leader":
-        df_all_cases = pd.read_sql_query("SELECT * FROM cases WHERE lower(province) = lower(?)", conn, params=(user_province,))
+        df_all_cases = pd.read_sql_query("SELECT * FROM cases WHERE lower(province) = lower(:p)", engine, params={"p": user_province})
     else:
-        df_all_cases = pd.read_sql_query("SELECT * FROM cases WHERE lower(staff_email) = lower(?) OR lower(encoded_by) = lower(?)", conn, params=(user_email, user_email))
+        df_all_cases = pd.read_sql_query("SELECT * FROM cases WHERE lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e)", engine, params={"e": user_email})
     
     col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
     with col_kpi1:
@@ -545,8 +427,11 @@ elif menu_selection == "👤 1. Personal & Profiling":
     
     if control_no_val.strip() != "":
         current_id = c_data.get("id", 0)
-        c.execute("SELECT id, first_name, last_name, staff_email FROM cases WHERE lower(control_no) = lower(?) AND id != ?", (control_no_val.strip(), current_id))
-        dup = c.fetchone()
+        with engine.connect() as conn:
+            dup = conn.execute(
+                text("SELECT id, first_name, last_name, staff_email FROM cases WHERE lower(control_no) = lower(:c) AND id != :id"),
+                {"c": control_no_val.strip(), "id": current_id}
+            ).fetchone()
         if dup:
             st.error(f"⚠️ **DUPLICATE DETECTED IN ENGLISH:** TFDCC Household ID No. '{control_no_val}' is already registered in the system under **{dup[1]} {dup[2]}** (Encoded by: {dup[3]}). Please verify before saving!")
 
@@ -640,17 +525,37 @@ elif menu_selection == "👤 1. Personal & Profiling":
             gis_date_str = gis_date_picker.strftime('%m-%d-%Y')
             
             if last_name and first_name and control_no_val:
+                params_save = {
+                    "control_no": control_no_val, "gis_date": gis_date_str, "client_id": crn_number,
+                    "last_name": last_name, "first_name": first_name, "middle_name": middle_name,
+                    "ext_name": ext_name, "alias": alias, "phone_no": phone_no, "birthdate": birthdate_str,
+                    "age": age, "sex": sex, "civil_status": civil_status, "crn_number": crn_number,
+                    "vot_status": vot_status, "ciac_status": ciac_status, "marriage_details": marriage_details,
+                    "num_wives": num_wives, "wife_order": wife_order, "affiliated_group": affiliated_group,
+                    "fve_specify": fve_specify, "pag_specify": pag_specify, "rank_role": rank_role,
+                    "duration_involvement": duration_involvement, "purok": purok, "barangay": barangay,
+                    "city_muni": city_muni, "province": province, "region": region, "place_of_birth": place_of_birth,
+                    "ethnicity": ethnicity, "place_of_integration": place_of_integration, "physical_disability": physical_disability,
+                    "health_conditions_maint": health_conditions_maint, "education_type": education_type, "school_name_dates": school_name_dates,
+                    "education_level": education_level, "occupation_before": occupation_before, "current_occupation": current_occupation,
+                    "motivations_joining": motivations_joining, "reasons_leaving": reasons_leaving, "intentions_motivations": intentions_motivations,
+                    "dialects_spoken": dialects_spoken, "birth_cert_status": birth_cert_status, "birth_cert_registry": birth_cert_registry,
+                    "marriage_cert_status": marriage_cert_status, "philhealth_status": philhealth_status, "philhealth_id": philhealth_id,
+                    "philhealth_category": philhealth_category, "staff_email": user_email, "encoded_by": user_email
+                }
+                
                 if selected_option == "-- ADD NEW BENEFICIARY --" and not c_data.get("id"):
-                    c.execute("""
-                        INSERT INTO cases (control_no, gis_date, client_id, last_name, first_name, middle_name, ext_name, alias, phone_no, birthdate, age, sex, civil_status, crn_number, vot_status, ciac_status, marriage_details, num_wives, wife_order, affiliated_group, fve_specify, pag_specify, rank_role, duration_involvement, purok, barangay, city_muni, province, region, place_of_birth, ethnicity, place_of_integration, physical_disability, health_conditions_maint, education_type, school_name_dates, education_level, occupation_before, current_occupation, motivations_joining, reasons_leaving, intentions_motivations, dialects_spoken, birth_cert_status, birth_cert_registry, marriage_cert_status, philhealth_status, philhealth_id, philhealth_category, staff_email, encoded_by)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (control_no_val, gis_date_str, crn_number, last_name, first_name, middle_name, ext_name, alias, phone_no, birthdate_str, age, sex, civil_status, crn_number, vot_status, ciac_status, marriage_details, num_wives, wife_order, affiliated_group, fve_specify, pag_specify, rank_role, duration_involvement, purok, barangay, city_muni, province, region, place_of_birth, ethnicity, place_of_integration, physical_disability, health_conditions_maint, education_type, school_name_dates, education_level, occupation_before, current_occupation, motivations_joining, reasons_leaving, intentions_motivations, dialects_spoken, birth_cert_status, birth_cert_registry, marriage_cert_status, philhealth_status, philhealth_id, philhealth_category, user_email, user_email))
+                    cols = ", ".join(params_save.keys())
+                    vals = ", ".join([f":{k}" for k in params_save.keys()])
+                    with engine.begin() as conn:
+                        conn.execute(text(f"INSERT INTO cases ({cols}) VALUES ({vals})"), params_save)
                 else:
                     edit_id = c_data.get("id", selected_id)
-                    c.execute("""
-                        UPDATE cases SET control_no=?, gis_date=?, last_name=?, first_name=?, middle_name=?, ext_name=?, alias=?, phone_no=?, birthdate=?, age=?, sex=?, civil_status=?, crn_number=?, vot_status=?, ciac_status=?, marriage_details=?, num_wives=?, wife_order=?, affiliated_group=?, fve_specify=?, pag_specify=?, rank_role=?, duration_involvement=?, purok=?, barangay=?, city_muni=?, province=?, region=?, place_of_birth=?, ethnicity=?, place_of_integration=?, physical_disability=?, health_conditions_maint=?, education_type=?, school_name_dates=?, education_level=?, occupation_before=?, current_occupation=?, motivations_joining=?, reasons_leaving=?, intentions_motivations=?, dialects_spoken=?, birth_cert_status=?, birth_cert_registry=?, marriage_cert_status=?, philhealth_status=?, philhealth_id=?, philhealth_category=?, staff_email=? WHERE id=?
-                    """, (control_no_val, gis_date_str, last_name, first_name, middle_name, ext_name, alias, phone_no, birthdate_str, age, sex, civil_status, crn_number, vot_status, ciac_status, marriage_details, num_wives, wife_order, affiliated_group, fve_specify, pag_specify, rank_role, duration_involvement, purok, barangay, city_muni, province, region, place_of_birth, ethnicity, place_of_integration, physical_disability, health_conditions_maint, education_type, school_name_dates, education_level, occupation_before, current_occupation, motivations_joining, reasons_leaving, intentions_motivations, dialects_spoken, birth_cert_status, birth_cert_registry, marriage_cert_status, philhealth_status, philhealth_id, philhealth_category, user_email, edit_id))
-                conn.commit()
+                    params_save["edit_id"] = edit_id
+                    set_clause = ", ".join([f"{k}=:{k}" for k in params_save.keys() if k != "edit_id" and k != "encoded_by"])
+                    with engine.begin() as conn:
+                        conn.execute(text(f"UPDATE cases SET {set_clause} WHERE id=:edit_id"), params_save)
+                
                 st.success("✅ Beneficiary record updated successfully!")
                 st.session_state["autofill_data"] = {}
                 st.rerun()
@@ -708,18 +613,25 @@ elif menu_selection in [
                 sub_add_fam = st.form_submit_button("➕ Add Living Family Member to List")
                 if sub_add_fam:
                     if f_name and case_id:
-                        c.execute("""
-                            INSERT INTO family_members (case_id, full_name, age, birthdate, gender, relationship, civil_status, ethnicity, skills, occupation, pwd_status, maintenance_meds)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (case_id, f_name, f_age, f_bday.strftime('%Y-%m-%d'), f_gender, f_rel, f_status, f_ethnicity, f_skills, f_occ, f_pwd, f_meds))
-                        conn.commit()
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text("""
+                                    INSERT INTO family_members (case_id, full_name, age, birthdate, gender, relationship, civil_status, ethnicity, skills, occupation, pwd_status, maintenance_meds)
+                                    VALUES (:cid, :fn, :age, :bd, :g, :rel, :cs, :eth, :sk, :occ, :pwd, :meds)
+                                """),
+                                {
+                                    "cid": case_id, "fn": f_name, "age": f_age, "bd": f_bday.strftime('%Y-%m-%d'),
+                                    "g": f_gender, "rel": f_rel, "cs": f_status, "eth": f_ethnicity,
+                                    "sk": f_skills, "occ": f_occ, "pwd": f_pwd, "meds": f_meds
+                                }
+                            )
                         st.success(f"✅ Added family member: {f_name}")
                         st.rerun()
                     elif not case_id:
                         st.warning("⚠️ Please select a beneficiary record first before adding family members.")
 
         if case_id:
-            df_fam = pd.read_sql_query("SELECT full_name AS 'Full Name', birthdate AS 'Birthdate', age AS 'Age', gender AS 'Gender', relationship AS 'Relationship', civil_status AS 'Civil Status', occupation AS 'Occupation', pwd_status AS 'PWD Status' FROM family_members WHERE case_id = ?", conn, params=(case_id,))
+            df_fam = pd.read_sql_query("SELECT full_name AS 'Full Name', birthdate AS 'Birthdate', age AS 'Age', gender AS 'Gender', relationship AS 'Relationship', civil_status AS 'Civil Status', occupation AS 'Occupation', pwd_status AS 'PWD Status' FROM family_members WHERE case_id = :cid", engine, params={"cid": case_id})
             if not df_fam.empty:
                 st.write("##### 📋 Registered Living Family Members History:")
                 st.dataframe(df_fam, use_container_width=True, hide_index=True)
@@ -741,18 +653,24 @@ elif menu_selection in [
                 sub_add_dec = st.form_submit_button("➕ Add Deceased Family Member to List")
                 if sub_add_dec:
                     if d_name and case_id:
-                        c.execute("""
-                            INSERT INTO deceased_family_members (case_id, full_name, relationship, date_of_death, reason_of_death, has_death_cert)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        """, (case_id, d_name, d_rel, d_date_picker.strftime('%Y-%m-%d'), d_reason, d_cert))
-                        conn.commit()
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text("""
+                                    INSERT INTO deceased_family_members (case_id, full_name, relationship, date_of_death, reason_of_death, has_death_cert)
+                                    VALUES (:cid, :fn, :rel, :dod, :rod, :hdc)
+                                """),
+                                {
+                                    "cid": case_id, "fn": d_name, "rel": d_rel,
+                                    "dod": d_date_picker.strftime('%Y-%m-%d'), "rod": d_reason, "hdc": d_cert
+                                }
+                            )
                         st.success(f"✅ Added deceased family member: {d_name}")
                         st.rerun()
                     elif not case_id:
                         st.warning("⚠️ Please select a beneficiary record first before adding family members.")
 
         if case_id:
-            df_dec = pd.read_sql_query("SELECT full_name AS 'Full Name', relationship AS 'Relationship', date_of_death AS 'Date of Death', reason_of_death AS 'Cause of Death', has_death_cert AS 'Death Cert' FROM deceased_family_members WHERE case_id = ?", conn, params=(case_id,))
+            df_dec = pd.read_sql_query("SELECT full_name AS 'Full Name', relationship AS 'Relationship', date_of_death AS 'Date of Death', reason_of_death AS 'Cause of Death', has_death_cert AS 'Death Cert' FROM deceased_family_members WHERE case_id = :cid", engine, params={"cid": case_id})
             if not df_dec.empty:
                 st.write("##### 📋 Registered Deceased Family Members History:")
                 st.dataframe(df_dec, use_container_width=True, hide_index=True)
@@ -761,7 +679,7 @@ elif menu_selection in [
         with st.form("module_general_form"):
             if menu_selection == "📋 3. Prob & Assistance":
                 st.markdown("##### 📋 Presenting Problem & Requested Assistance (Part IV)")
-                prob_desc = st.text_area("Presenting Problem Description (Include medical, legal, and social issues with consent)", value=str(c_data.get("prob_desc", "")))
+                prob_desc = st.text_area("Presenting Problem Description", value=str(c_data.get("prob_desc", "")))
                 assist_requested = st.text_area("Specific Assistance Requested from DSWD", value=str(c_data.get("assist_requested", "")))
 
             elif menu_selection == "🏠 4. Infrastructure & Housing":
@@ -775,7 +693,7 @@ elif menu_selection in [
                     walling_material = st.selectbox("Walling Material", ["Bamboo", "Concrete", "Nipa", "Wood/Lumber", "Others"])
                 with col_h2:
                     flooring_material = st.selectbox("Flooring Material", ["Bamboo", "Concrete", "Soil", "Wood/Lumber", "Others"])
-                    water_source = st.text_input("Source of Water (Within/Outside residence, Wells, Rivers, Rain, Public Distributor)", value=str(c_data.get("water_source", "")))
+                    water_source = st.text_input("Source of Water", value=str(c_data.get("water_source", "")))
                     sanitation_toilet = st.selectbox("Sanitation (Restroom Access)", ["Yes (Inside home)", "Yes (Outside home)", "No / Communal"])
 
                 st.divider()
@@ -786,9 +704,9 @@ elif menu_selection in [
                     illness_duration = st.text_input("Duration of Illness:", value=str(c_data.get("illness_duration", "")))
                     illness_severity = st.text_input("Severity / Immediate Attention Needed:", value=str(c_data.get("illness_severity", "")))
                 with col_g2:
-                    govt_assistance_received = st.text_area("Govt Programs Received in Last 5 Years (4Ps, SLP, AICS, PAMANA, Social Pension, etc.):", value=str(c_data.get("govt_assistance_received", "")))
-                    govt_assistance_usage = st.text_area("Usage of Financial Assistance Received (Food, Business, Education, Meds, Debt, etc.):", value=str(c_data.get("govt_assistance_usage", "")))
-                    govt_assistance_impact = st.selectbox("Extent Assistance Contributed to Family Well-being:", ["Helped significantly", "Helped to some extent", "Helped only minimally", "Did not help"])
+                    govt_assistance_received = st.text_area("Govt Programs Received in Last 5 Years:", value=str(c_data.get("govt_assistance_received", "")))
+                    govt_assistance_usage = st.text_area("Usage of Financial Assistance Received:", value=str(c_data.get("govt_assistance_usage", "")))
+                    govt_assistance_impact = st.selectbox("Extent Assistance Contributed:", ["Helped significantly", "Helped to some extent", "Helped only minimally", "Did not help"])
 
             elif menu_selection == "🌾 5. Agricultural Info":
                 st.markdown("##### 🌾 Agricultural Information & Farming Engagement (Annex A2)")
@@ -797,29 +715,29 @@ elif menu_selection in [
                     land_ownership = st.selectbox("Do you own a land?", ["Yes", "No"])
                     land_ownership_type = st.selectbox("Ownership Type", ["Titled", "Stewardship/Tenant", "Pre-patent", "CADT", "Rented", "N/A"])
                     land_location = st.text_input("Land Location:", value=str(c_data.get("land_location", "")))
-                    land_area = st.text_input("Land Area (Hectares / sqm):", value=str(c_data.get("land_area", "")))
+                    land_area = st.text_input("Land Area:", value=str(c_data.get("land_area", "")))
                     agri_equipment = st.selectbox("Agricultural Equipment Owned/Acquired:", ["Owned", "Acquired", "None"])
                 with col_a2:
                     agri_cultivation_involvement = st.selectbox("Involved in Agricultural Cultivation?", ["Yes", "No"])
-                    crops_specify = st.text_input("Crops Produced (Banana, Coconut, Corn, Fruit trees, Rice, Vegetables, etc.):", value=str(c_data.get("crops_specify", "")))
-                    livestock_specify = st.text_input("Livestock & Poultry (Carabao, Cattle, Chicken, Duck, Goat, Fish):", value=str(c_data.get("livestock_specify", "")))
-                    fisheries_specify = st.text_input("Fisheries Sector (Freshwater, Seawater):", value=str(c_data.get("fisheries_specify", "")))
-                    support_services_specify = st.text_input("Agri Support Services (Agri supply, Feeds):", value=str(c_data.get("support_services_specify", "")))
+                    crops_specify = st.text_input("Crops Produced:", value=str(c_data.get("crops_specify", "")))
+                    livestock_specify = st.text_input("Livestock & Poultry:", value=str(c_data.get("livestock_specify", "")))
+                    fisheries_specify = st.text_input("Fisheries Sector:", value=str(c_data.get("fisheries_specify", "")))
+                    support_services_specify = st.text_input("Agri Support Services:", value=str(c_data.get("support_services_specify", "")))
 
                 st.divider()
                 col_a3, col_a4 = st.columns(2)
                 with col_a3:
                     farming_interest = st.selectbox("Do you want to engage in farming?", ["Yes", "No"])
-                    farming_assistance_needed = st.text_input("Specific Farming Assistance Needed (Seedlings, Equipment, Infra, Capital):", value=str(c_data.get("farming_assistance_needed", "")))
+                    farming_assistance_needed = st.text_input("Specific Farming Assistance Needed:", value=str(c_data.get("farming_assistance_needed", "")))
                 with col_a4:
-                    farming_infra_needed = st.text_input("Infra Needed (Farm to Market Road, Irrigation, Solar, Warehouse):", value=str(c_data.get("farming_infra_needed", "")))
-                    farming_skills_desired = st.text_input("Farming Skills Enhancement Desired (Cattle fattening, Duck raising, Organic farming):", value=str(c_data.get("farming_skills_desired", "")))
+                    farming_infra_needed = st.text_input("Infra Needed:", value=str(c_data.get("farming_infra_needed", "")))
+                    farming_skills_desired = st.text_input("Farming Skills Enhancement Desired:", value=str(c_data.get("farming_skills_desired", "")))
 
             elif menu_selection == "💼 6. Livelihood & Employment":
                 st.markdown("##### 💼 Livelihood Investment & Employment Support (Annex A3)")
                 col_l1, col_l2 = st.columns(2)
                 with col_l1:
-                    vehicles_owned = st.text_input("Vehicles Owned & Quantity (Boat, Tricycle, Jeepney, Van, Motorcycle):", value=str(c_data.get("vehicles_owned", "")))
+                    vehicles_owned = st.text_input("Vehicles Owned & Quantity:", value=str(c_data.get("vehicles_owned", "")))
                     occupation_status = st.selectbox("Employment / Occupation Status:", ["Self-employed (Business)", "Wage Earner (Employee)", "Wage Earner (Contract of Service/JO)", "Unemployed", "Not Applicable"])
                     occupation_specify = st.text_input("Specify Current Occupation:", value=str(c_data.get("occupation_specify", "")))
                     desired_future_occ = st.text_input("Desired Future Occupation:", value=str(c_data.get("desired_future_occ", "")))
@@ -836,11 +754,11 @@ elif menu_selection in [
                     business_type = st.selectbox("Type of Business Engaged In:", ["Manufacturing business", "Merchandise store (Sari-sari/groceries)", "Service shop (Karenderia/repair/salon)", "Others", "None"])
                     business_duration = st.selectbox("Duration in Business:", ["Less than 6 months", "7 months to 1 year", "1 to 2 years", "3 years above", "N/A"])
                     business_goal = st.selectbox("Business Goal:", ["Expand business", "Diversify to a new one", "N/A"])
-                    business_assets_owned = st.text_input("Assets/Resources Owned (Capital, Equipment, Location):", value=str(c_data.get("business_assets_owned", "")))
+                    business_assets_owned = st.text_input("Assets/Resources Owned:", value=str(c_data.get("business_assets_owned", "")))
                 with col_l4:
-                    uniformed_service_interest = st.text_input("Interest in Uniformed Services (AFP, PNP, Coast Guard, BJMP, CAFGU, Forest Guard):", value=str(c_data.get("uniformed_service_interest", "")))
+                    uniformed_service_interest = st.text_input("Interest in Uniformed Services:", value=str(c_data.get("uniformed_service_interest", "")))
                     cfw_interest = st.selectbox("Interested in Cash for Work (CFW)?", ["Yes", "No"])
-                    cfw_preferred_work = st.text_input("Preferred CFW Work (De-clogging, Flood control, Gardening, Road cleaning, Tree planting):", value=str(c_data.get("cfw_preferred_work", "")))
+                    cfw_preferred_work = st.text_input("Preferred CFW Work:", value=str(c_data.get("cfw_preferred_work", "")))
 
             elif menu_selection == "🧠 7. Psychosocial Support":
                 st.markdown("##### 🧠 Psychosocial Support & Community Integration (Annex A4)")
@@ -854,7 +772,7 @@ elif menu_selection in [
                     uniformed_personnel_feeling = st.text_area("Reaction / Feeling When Seeing Uniformed Personnel:", value=str(c_data.get("uniformed_personnel_feeling", "")))
                 with col_p2:
                     threats_perceived = st.text_area("Perceived Threats in Community:", value=str(c_data.get("threats_perceived", "")))
-                    current_time_spent = st.text_area("How Current Time is Spent (Work, Study, Community):", value=str(c_data.get("current_time_spent", "")))
+                    current_time_spent = st.text_area("How Current Time is Spent:", value=str(c_data.get("current_time_spent", "")))
                     hopes_aspirations = st.text_area("Hopes and Aspirations for the Future:", value=str(c_data.get("hopes_aspirations", "")))
                     transformation_challenges = st.text_area("Challenges Faced in Transformation Process:", value=str(c_data.get("transformation_challenges", "")))
                     coping_mechanisms = st.text_area("Coping Mechanisms for Stress & Difficulties:", value=str(c_data.get("coping_mechanisms", "")))
@@ -867,7 +785,7 @@ elif menu_selection in [
                     barangay_council_member = st.selectbox("Member of Barangay Council?", ["Yes", "No"])
                     pending_legal_cases = st.text_input("Awareness of Pending Legal/Criminal Cases:", value=str(c_data.get("pending_legal_cases", "")))
                 with col_p4:
-                    arrest_history = st.text_input("Apprehension/Arrest History by Law Enforcement:", value=str(c_data.get("arrest_history", "")))
+                    arrest_history = st.text_input("Apprehension/Arrest History:", value=str(c_data.get("arrest_history", "")))
                     message_to_govt = st.text_area("Message / Expression to the Government:", value=str(c_data.get("message_to_govt", "")))
 
             elif menu_selection == "🎓 8. Capacity Building":
@@ -881,7 +799,7 @@ elif menu_selection in [
                 with col_cb2:
                     formal_education_wish = st.selectbox("Wish to Enroll in Formal Education?", ["Yes", "No", "Not Applicable"])
                     als_enrollment_wish = st.selectbox("Willing to Enroll in ALS?", ["Yes", "No", "Not Applicable"])
-                    education_docs_available = st.text_input("Requirements Available (Birth Cert, Form 137, College Units, ALS Cert, Valid ID):", value=str(c_data.get("education_docs_available", "")))
+                    education_docs_available = st.text_input("Requirements Available:", value=str(c_data.get("education_docs_available", "")))
 
                 st.divider()
                 col_cb3, col_cb4 = st.columns(2)
@@ -889,7 +807,7 @@ elif menu_selection in [
                     dependents_education_wish = st.text_input("Dependents to Enroll in Formal Ed or ALS:", value=str(c_data.get("dependents_education_wish", "")))
                     study_grant_dependents = st.text_input("Dependents to Avail Study Grant / Scholarship:", value=str(c_data.get("study_grant_dependents", "")))
                 with col_cb4:
-                    skills_training_desired_list = st.text_area("Desired Skills Training Courses (Baking, Carpentry, Cookery, Driving, Electrical, Masonry, Plumbing, Welding, Solar, etc.):", value=str(c_data.get("skills_training_desired_list", "")))
+                    skills_training_desired_list = st.text_area("Desired Skills Training Courses:", value=str(c_data.get("skills_training_desired_list", "")))
                     skills_training_dependents = st.text_input("Dependents to Avail Skills Training:", value=str(c_data.get("skills_training_dependents", "")))
 
             elif menu_selection == "📝 9. Assessment & Updates":
@@ -910,21 +828,27 @@ elif menu_selection in [
             if sub_m:
                 if case_id:
                     if menu_selection == "📋 3. Prob & Assistance":
-                        c.execute("UPDATE cases SET prob_desc=?, assist_requested=? WHERE id=?", (prob_desc, assist_requested, case_id))
+                        with engine.begin() as conn:
+                            conn.execute(text("UPDATE cases SET prob_desc=:pd, assist_requested=:ar WHERE id=:id"), {"pd": prob_desc, "ar": assist_requested, "id": case_id})
                     elif menu_selection == "🏠 4. Infrastructure & Housing":
-                        c.execute("UPDATE cases SET house_ownership=?, housing_condition=?, house_renovate_pref=?, roofing_material=?, walling_material=?, flooring_material=?, water_source=?, sanitation_toilet=?, illness_6months=?, illness_duration=?, illness_severity=?, govt_assistance_received=?, govt_assistance_usage=?, govt_assistance_impact=? WHERE id=?", (house_ownership, housing_condition, house_renovate_pref, roofing_material, walling_material, flooring_material, water_source, sanitation_toilet, illness_6months, illness_duration, illness_severity, govt_assistance_received, govt_assistance_usage, govt_assistance_impact, case_id))
+                        with engine.begin() as conn:
+                            conn.execute(text("UPDATE cases SET house_ownership=:ho, housing_condition=:hc, house_renovate_pref=:hrp, roofing_material=:rm, walling_material=:wm, flooring_material=:fm, water_source=:ws, sanitation_toilet=:st, illness_6months=:i6, illness_duration=:id, illness_severity=:isev, govt_assistance_received=:gar, govt_assistance_usage=:gau, govt_assistance_impact=:gai WHERE id=:case_id"), {"ho": house_ownership, "hc": housing_condition, "hrp": house_renovate_pref, "rm": roofing_material, "wm": walling_material, "fm": flooring_material, "ws": water_source, "st": sanitation_toilet, "i6": illness_6months, "id": illness_duration, "isev": illness_severity, "gar": govt_assistance_received, "gau": govt_assistance_usage, "gai": govt_assistance_impact, "case_id": case_id})
                     elif menu_selection == "🌾 5. Agricultural Info":
-                        c.execute("UPDATE cases SET land_ownership=?, land_ownership_type=?, land_location=?, land_area=?, agri_equipment=?, agri_cultivation_involvement=?, crops_specify=?, livestock_specify=?, fisheries_specify=?, support_services_specify=?, farming_interest=?, farming_assistance_needed=?, farming_infra_needed=?, farming_skills_desired=? WHERE id=?", (land_ownership, land_ownership_type, land_location, land_area, agri_equipment, agri_cultivation_involvement, crops_specify, livestock_specify, fisheries_specify, support_services_specify, farming_interest, farming_assistance_needed, farming_infra_needed, farming_skills_desired, case_id))
+                        with engine.begin() as conn:
+                            conn.execute(text("UPDATE cases SET land_ownership=:lo, land_ownership_type=:lot, land_location=:ll, land_area=:la, agri_equipment=:ae, agri_cultivation_involvement=:aci, crops_specify=:cs, livestock_specify=:ls, fisheries_specify=:fs, support_services_specify=:sss, farming_interest=:fi, farming_assistance_needed=:fan, farming_infra_needed=:fin, farming_skills_desired=:fsd WHERE id=:case_id"), {"lo": land_ownership, "lot": land_ownership_type, "ll": land_location, "la": land_area, "ae": agri_equipment, "aci": agri_cultivation_involvement, "cs": crops_specify, "ls": livestock_specify, "fs": fisheries_specify, "sss": support_services_specify, "fi": farming_interest, "fan": farming_assistance_needed, "fin": farming_infra_needed, "fsd": farming_skills_desired, "case_id": case_id})
                     elif menu_selection == "💼 6. Livelihood & Employment":
-                        c.execute("UPDATE cases SET vehicles_owned=?, occupation_status=?, occupation_specify=?, desired_future_occ=?, coop_membership=?, coop_name=?, coop_position=?, coop_duration=?, business_type=?, business_duration=?, business_goal=?, business_assets_owned=?, uniformed_service_interest=?, cfw_interest=?, cfw_preferred_work=? WHERE id=?", (vehicles_owned, occupation_status, occupation_specify, desired_future_occ, coop_membership, coop_name, coop_position, coop_duration, business_type, business_duration, business_goal, business_assets_owned, uniformed_service_interest, cfw_interest, cfw_preferred_work, case_id))
+                        with engine.begin() as conn:
+                            conn.execute(text("UPDATE cases SET vehicles_owned=:vo, occupation_status=:os, occupation_specify=:ospec, desired_future_occ=:dfo, coop_membership=:cm, coop_name=:cn, coop_position=:cp, coop_duration=:cd, business_type=:bt, business_duration=:bd, business_goal=:bg, business_assets_owned=:bao, uniformed_service_interest=:usi, cfw_interest=:cfwi, cfw_preferred_work=:cfwpw WHERE id=:case_id"), {"vo": vehicles_owned, "os": occupation_status, "ospec": occupation_specify, "dfo": desired_future_occ, "cm": coop_membership, "cn": coop_name, "cp": coop_position, "cd": coop_duration, "bt": business_type, "bd": business_duration, "bg": business_goal, "bao": business_assets_owned, "usi": uniformed_service_interest, "cfwi": cfw_interest, "cfwpw": cfw_preferred_work, "case_id": case_id})
                     elif menu_selection == "🧠 7. Psychosocial Support":
-                        c.execute("UPDATE cases SET mental_health_impact=?, psychological_mgmt=?, family_rel_change=?, support_system=?, feeling_safety=?, uniformed_personnel_feeling=?, threats_perceived=?, current_time_spent=?, hopes_aspirations=?, transformation_challenges=?, coping_mechanisms=?, personal_growth=?, barangay_council_member=?, pending_legal_cases=?, arrest_history=?, message_to_govt=? WHERE id=?", (mental_health_impact, psychological_mgmt, family_rel_change, support_system, feeling_safety, uniformed_personnel_feeling, threats_perceived, current_time_spent, hopes_aspirations, transformation_challenges, coping_mechanisms, personal_growth, barangay_council_member, pending_legal_cases, arrest_history, message_to_govt, case_id))
+                        with engine.begin() as conn:
+                            conn.execute(text("UPDATE cases SET mental_health_impact=:mhi, psychological_mgmt=:pm, family_rel_change=:frc, support_system=:ss, feeling_safety=:fs, uniformed_personnel_feeling=:upf, threats_perceived=:tp, current_time_spent=:cts, hopes_aspirations=:ha, transformation_challenges=:tc, coping_mechanisms=:cm, personal_growth=:pg, barangay_council_member=:bcm, pending_legal_cases=:plc, arrest_history=:ah, message_to_govt=:mtg WHERE id=:case_id"), {"mhi": mental_health_impact, "pm": psychological_mgmt, "frc": family_rel_change, "ss": support_system, "fs": feeling_safety, "upf": uniformed_personnel_feeling, "tp": threats_perceived, "cts": current_time_spent, "ha": hopes_aspirations, "tc": transformation_challenges, "cm": coping_mechanisms, "pg": personal_growth, "bcm": barangay_council_member, "plc": pending_legal_cases, "ah": arrest_history, "mtg": message_to_govt, "case_id": case_id})
                     elif menu_selection == "🎓 8. Capacity Building":
-                        c.execute("UPDATE cases SET existing_skills=?, skills_acquisition_mode=?, skills_training_wish=?, skills_training_pref=?, formal_education_wish=?, als_enrollment_wish=?, education_docs_available=?, dependents_education_wish=?, study_grant_dependents=?, skills_training_desired_list=?, skills_training_dependents=? WHERE id=?", (existing_skills, skills_acquisition_mode, skills_training_wish, skills_training_pref, formal_education_wish, als_enrollment_wish, education_docs_available, dependents_education_wish, study_grant_dependents, skills_training_desired_list, skills_training_dependents, case_id))
+                        with engine.begin() as conn:
+                            conn.execute(text("UPDATE cases SET existing_skills=:es, skills_acquisition_mode=:sam, skills_training_wish=:stw, skills_training_pref=:stp, formal_education_wish=:few, als_enrollment_wish=:aew, education_docs_available=:eda, dependents_education_wish=:dew, study_grant_dependents=:sgd, skills_training_desired_list=:stdl, skills_training_dependents=:std WHERE id=:case_id"), {"es": existing_skills, "sam": skills_acquisition_mode, "stw": skills_training_wish, "stp": skills_training_pref, "few": formal_education_wish, "aew": als_enrollment_wish, "eda": education_docs_available, "dew": dependents_education_wish, "sgd": study_grant_dependents, "stdl": skills_training_desired_list, "std": skills_training_dependents, "case_id": case_id})
                     elif menu_selection == "📝 9. Assessment & Updates":
-                        c.execute("UPDATE cases SET sw_assessment=?, place_of_interview=?, interviewed_by=?, approved_by=? WHERE id=?", (sw_assessment, place_of_interview, user_email, approved_by, case_id))
+                        with engine.begin() as conn:
+                            conn.execute(text("UPDATE cases SET sw_assessment=:sa, place_of_interview=:poi, interviewed_by=:ib, approved_by=:ab WHERE id=:case_id"), {"sa": sw_assessment, "poi": place_of_interview, "ib": user_email, "ab": approved_by, "case_id": case_id})
                     
-                    conn.commit()
                     st.success(f"✅ Successfully saved {menu_selection} information for beneficiary ID #{case_id}!")
                 else:
                     st.info("ℹ️ Form processed. Select or add a client in Module 1 to bind data.")
@@ -953,13 +877,13 @@ elif menu_selection == "📊 Masterlist Database":
         st.markdown(f"### 👤 Personal Encoding Panel ({user_name})")
         
         if user_role in ["Superuser", "Admin"]:
-            df_my_entries = pd.read_sql_query("SELECT * FROM cases ORDER BY id DESC", conn)
+            df_my_entries = pd.read_sql_query("SELECT * FROM cases ORDER BY id DESC", engine)
             st.info("👑 **Super User Mode:** Displaying ALL encoded entries across the system.")
         elif user_role == "Team Leader":
-            df_my_entries = pd.read_sql_query("SELECT * FROM cases WHERE lower(province) = lower(?) ORDER BY id DESC", conn, params=(user_province,))
+            df_my_entries = pd.read_sql_query("SELECT * FROM cases WHERE lower(province) = lower(:p) ORDER BY id DESC", engine, params={"p": user_province})
             st.info(f"🔰 **Team Leader Mode:** Displaying entries under **{user_province}** jurisdiction.")
         else:
-            df_my_entries = pd.read_sql_query("SELECT * FROM cases WHERE lower(encoded_by) = lower(?) OR lower(staff_email) = lower(?) ORDER BY id DESC", conn, params=(user_email, user_email))
+            df_my_entries = pd.read_sql_query("SELECT * FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e) ORDER BY id DESC", engine, params={"e": user_email})
             st.info("🔒 **User Security Restriction:** Displaying STRICTLY your own encoded entries.")
 
         if not df_my_entries.empty:
@@ -987,11 +911,14 @@ elif menu_selection == "📊 Masterlist Database":
                         if del_reason.strip():
                             req_case_id, req_hhid, req_cname = del_options[selected_del]
                             req_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            c.execute("""
-                                INSERT INTO deletion_requests (case_id, control_no, client_name, requested_by, reason, request_date, status)
-                                VALUES (?, ?, ?, ?, ?, ?, 'PENDING')
-                            """, (req_case_id, req_hhid, req_cname, user_email, del_reason.strip(), req_date))
-                            conn.commit()
+                            with engine.begin() as conn:
+                                conn.execute(
+                                    text("""
+                                        INSERT INTO deletion_requests (case_id, control_no, client_name, requested_by, reason, request_date, status)
+                                        VALUES (:cid, :hhid, :cn, :rb, :r, :rd, 'PENDING')
+                                    """),
+                                    {"cid": req_case_id, "hhid": req_hhid, "cn": req_cname, "rb": user_email, "r": del_reason.strip(), "rd": req_date}
+                                )
                             st.success(f"📩 Deletion request for ID #{req_case_id} submitted to Super Admin for approval!")
                         else:
                             st.error("⚠️ Please provide a reason for the deletion request.")
@@ -1000,17 +927,17 @@ elif menu_selection == "📊 Masterlist Database":
 
     with tabs[1]:
         query = "SELECT * FROM cases WHERE 1=1"
-        params = []
+        params = {}
         if user_role not in ["Superuser", "Admin"] and user_province not in ["RPMO", "CO"]:
             if user_role == "Team Leader":
-                query += " AND lower(province) = lower(?)"
-                params.append(user_province)
+                query += " AND lower(province) = lower(:p)"
+                params["p"] = user_province
             else:
-                query += " AND (lower(staff_email) = lower(?) OR lower(encoded_by) = lower(?))"
-                params.extend([user_email, user_email])
+                query += " AND (lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e))"
+                params["e"] = user_email
 
         query += " ORDER BY id DESC"
-        df_master = pd.read_sql_query(query, conn, params=params)
+        df_master = pd.read_sql_query(query, engine, params=params)
         st.metric("Total Authorized Masterlist Records", len(df_master))
         st.dataframe(df_master, use_container_width=True)
 
@@ -1064,11 +991,11 @@ elif menu_selection == "📊 Masterlist Database":
     with tabs[3]:
         st.markdown("### 📥 Export Reports Control Portal")
         if user_role in ["Superuser", "Admin"]:
-            df_exp_final = pd.read_sql_query("SELECT * FROM cases", conn)
+            df_exp_final = pd.read_sql_query("SELECT * FROM cases", engine)
         elif user_role == "Team Leader":
-            df_exp_final = pd.read_sql_query("SELECT * FROM cases WHERE lower(province) = lower(?)", conn, params=(user_province,))
+            df_exp_final = pd.read_sql_query("SELECT * FROM cases WHERE lower(province) = lower(:p)", engine, params={"p": user_province})
         else:
-            df_exp_final = pd.read_sql_query("SELECT * FROM cases WHERE lower(encoded_by) = lower(?) OR lower(staff_email) = lower(?)", conn, params=(user_email, user_email))
+            df_exp_final = pd.read_sql_query("SELECT * FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e)", engine, params={"e": user_email})
 
         if len(df_exp_final) == 0:
             st.warning("⚠️ Access Restricted: Account currently has 0 encoded entries under your scope.")
@@ -1086,7 +1013,7 @@ elif menu_selection == "📊 Masterlist Database":
     if user_role in ["Superuser", "Admin"]:
         with tabs[4]:
             st.markdown("### 🗑️ Super Admin Deletion Request Approvals")
-            df_req = pd.read_sql_query("SELECT id, case_id AS 'Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', reason AS 'Reason for Deletion', request_date AS 'Request Date' FROM deletion_requests WHERE status = 'PENDING' ORDER BY id DESC", conn)
+            df_req = pd.read_sql_query("SELECT id, case_id AS 'Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', reason AS 'Reason for Deletion', request_date AS 'Request Date' FROM deletion_requests WHERE status = 'PENDING' ORDER BY id DESC", engine)
             
             if not df_req.empty:
                 st.dataframe(df_req, use_container_width=True)
@@ -1099,28 +1026,30 @@ elif menu_selection == "📊 Masterlist Database":
                 
                 with col_act1:
                     if st.button("✅ Approve & Auto-Backup to Archive", use_container_width=True):
-                        df_raw = pd.read_sql_query("SELECT * FROM cases WHERE id = ?", conn, params=(c_id,))
+                        df_raw = pd.read_sql_query("SELECT * FROM cases WHERE id = :id", engine, params={"id": c_id})
                         raw_json = df_raw.to_json(orient="records") if not df_raw.empty else "{}"
                         
                         archived_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        c.execute("""
-                            INSERT INTO deleted_cases_archive (original_case_id, control_no, client_name, requested_by, deletion_reason, deleted_by, archived_at, raw_case_data_json)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (c_id, c_hhid, c_name, c_req_by, c_reason, user_email, archived_at, raw_json))
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text("""
+                                    INSERT INTO deleted_cases_archive (original_case_id, control_no, client_name, requested_by, deletion_reason, deleted_by, archived_at, raw_case_data_json)
+                                    VALUES (:ocid, :cno, :cn, :rb, :dr, :db, :aat, :json)
+                                """),
+                                {"ocid": c_id, "cno": c_hhid, "cn": c_name, "rb": c_req_by, "dr": c_reason, "db": user_email, "aat": archived_at, "json": raw_json}
+                            )
+                            conn.execute(text("DELETE FROM cases WHERE id = :id"), {"id": c_id})
+                            conn.execute(text("DELETE FROM family_members WHERE case_id = :id"), {"id": c_id})
+                            conn.execute(text("DELETE FROM deceased_family_members WHERE case_id = :id"), {"id": c_id})
+                            conn.execute(text("UPDATE deletion_requests SET status = 'APPROVED' WHERE id = :id"), {"id": req_id})
                         
-                        c.execute("DELETE FROM cases WHERE id = ?", (c_id,))
-                        c.execute("DELETE FROM family_members WHERE case_id = ?", (c_id,))
-                        c.execute("DELETE FROM deceased_family_members WHERE case_id = ?", (c_id,))
-                        
-                        c.execute("UPDATE deletion_requests SET status = 'APPROVED' WHERE id = ?", (req_id,))
-                        conn.commit()
                         st.success(f"✅ Approved! Case #{c_id} ({c_name}) has been backed up to Archive and deleted from active database.")
                         st.rerun()
 
                 with col_act2:
                     if st.button("❌ Reject Request", use_container_width=True):
-                        c.execute("UPDATE deletion_requests SET status = 'REJECTED' WHERE id = ?", (req_id,))
-                        conn.commit()
+                        with engine.begin() as conn:
+                            conn.execute(text("UPDATE deletion_requests SET status = 'REJECTED' WHERE id = :id"), {"id": req_id})
                         st.info(f"❌ Deletion request for Case #{c_id} was rejected.")
                         st.rerun()
             else:
@@ -1128,7 +1057,7 @@ elif menu_selection == "📊 Masterlist Database":
 
         with tabs[5]:
             st.markdown("### 📦 Deleted Cases Recycle Bin & Archive (Auto-Backup)")
-            df_arch = pd.read_sql_query("SELECT archive_id AS 'Archive ID', original_case_id AS 'Original Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', deletion_reason AS 'Reason', deleted_by AS 'Approved By', archived_at AS 'Date Deleted' FROM deleted_cases_archive ORDER BY archive_id DESC", conn)
+            df_arch = pd.read_sql_query("SELECT archive_id AS 'Archive ID', original_case_id AS 'Original Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', deletion_reason AS 'Reason', deleted_by AS 'Approved By', archived_at AS 'Date Deleted' FROM deleted_cases_archive ORDER BY archive_id DESC", engine)
             
             if not df_arch.empty:
                 st.dataframe(df_arch, use_container_width=True)
@@ -1140,22 +1069,23 @@ elif menu_selection == "📊 Masterlist Database":
                 
                 if st.button("🔄 Restore Selected Record to Active Database", use_container_width=True):
                     arch_id = arch_options[selected_arch_id]
-                    c.execute("SELECT raw_case_data_json FROM deleted_cases_archive WHERE archive_id = ?", (arch_id,))
-                    res_json = c.fetchone()
+                    with engine.connect() as conn:
+                        res_json = conn.execute(text("SELECT raw_case_data_json FROM deleted_cases_archive WHERE archive_id = :id"), {"id": arch_id}).fetchone()
                     if res_json and res_json[0]:
                         df_res = pd.read_json(res_json[0], orient="records")
                         if not df_res.empty:
                             row_dict = df_res.iloc[0].to_dict()
-                            del row_dict['id']
+                            if 'id' in row_dict:
+                                del row_dict['id']
                             
                             cols = list(row_dict.keys())
-                            vals = list(row_dict.values())
-                            placeholders = ", ".join(["?"] * len(cols))
+                            placeholders = ", ".join([f":{k}" for k in cols])
                             col_names = ", ".join(cols)
                             
-                            c.execute(f"INSERT INTO cases ({col_names}) VALUES ({placeholders})", vals)
-                            c.execute("DELETE FROM deleted_cases_archive WHERE archive_id = ?", (arch_id,))
-                            conn.commit()
+                            with engine.begin() as conn:
+                                conn.execute(text(f"INSERT INTO cases ({col_names}) VALUES ({placeholders})"), row_dict)
+                                conn.execute(text("DELETE FROM deleted_cases_archive WHERE archive_id = :id"), {"id": arch_id})
+                            
                             st.success("✅ Record restored successfully back to active cases masterlist!")
                             st.rerun()
             else:
@@ -1187,8 +1117,11 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
             if submit_user:
                 if u_fname and u_lname and u_email:
                     try:
-                        c.execute("INSERT INTO user_accounts (first_name, last_name, province, user_role, email, password, require_change_pass) VALUES (?, ?, ?, ?, ?, ?, 1)", (u_fname, u_lname, u_province, u_role, u_email, curr_gen_pass))
-                        conn.commit()
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text("INSERT INTO user_accounts (first_name, last_name, province, user_role, email, password, require_change_pass) VALUES (:fn, :ln, :p, :r, :e, :pass, 1)"),
+                                {"fn": u_fname, "ln": u_lname, "p": u_province, "r": u_role, "e": u_email, "pass": curr_gen_pass}
+                            )
                         st.success(f"✅ Registered user: {u_fname} {u_lname} ({u_role})!")
                         
                         if send_via_email:
@@ -1203,8 +1136,8 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
                                 
                         st.session_state["generated_pass"] = generate_random_password()
                         st.rerun()
-                    except sqlite3.IntegrityError:
-                        st.error("⚠️ Email address already registered!")
+                    except Exception as ex:
+                        st.error(f"⚠️ Error creating user: {ex}")
                 else:
                     st.error("Please fill in First Name, Last Name, and Email Address.")
 
@@ -1213,14 +1146,13 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
         user_search_term = st.text_input("🔍 Search User Name or Email:")
         
         query_u = "SELECT id, first_name, last_name, email, user_role FROM user_accounts WHERE user_role != 'Superuser'"
-        params_u = []
+        params_u = {}
         if user_search_term:
-            query_u += " AND (lower(first_name) LIKE lower(?) OR lower(last_name) LIKE lower(?) OR lower(email) LIKE lower(?))"
-            st_param = f"%{user_search_term.strip()}%"
-            params_u.extend([st_param, st_param, st_param])
+            query_u += " AND (lower(first_name) LIKE lower(:s) OR lower(last_name) LIKE lower(:s) OR lower(email) LIKE lower(:s))"
+            params_u["s"] = f"%{user_search_term.strip()}%"
             
-        c.execute(query_u, params_u)
-        u_list = c.fetchall()
+        with engine.connect() as conn:
+            u_list = conn.execute(text(query_u), params_u).fetchall()
         
         if u_list:
             u_dict = {f"{r[1]} {r[2]} ({r[3]}) - [{r[4]}]": (r[0], r[3], f"{r[1]} {r[2]}", r[4]) for r in u_list}
@@ -1230,8 +1162,8 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
             if st.button("🔄 Reset Password Now", use_container_width=True):
                 res_id, res_email, res_full_name, res_role = u_dict[selected_reset_user]
                 new_temp_pass = generate_random_password()
-                c.execute("UPDATE user_accounts SET password = ?, require_change_pass = 1 WHERE id = ?", (new_temp_pass, res_id))
-                conn.commit()
+                with engine.begin() as conn:
+                    conn.execute(text("UPDATE user_accounts SET password = :p, require_change_pass = 1 WHERE id = :id"), {"p": new_temp_pass, "id": res_id})
                 st.success(f"✅ Reset Password initiated for {res_email}!")
                 
                 if send_reset_via_email:
@@ -1247,5 +1179,5 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
             st.warning("No users match your search criteria.")
 
     st.divider()
-    df_users = pd.read_sql_query("SELECT id, first_name || ' ' || last_name AS Name, email AS Email, user_role AS Role, province AS Province FROM user_accounts", conn)
+    df_users = pd.read_sql_query("SELECT id, first_name || ' ' || last_name AS Name, email AS Email, user_role AS Role, province AS Province FROM user_accounts", engine)
     st.dataframe(df_users, use_container_width=True, hide_index=True)
