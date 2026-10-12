@@ -246,17 +246,22 @@ PROVINCES_LIST = ["Misamis Oriental", "Misamis Occidental", "Bukidnon", "Lanao d
 
 def get_beneficiary_options():
     if user_role in ["Superuser", "Admin"]:
-        query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases ORDER BY id DESC")
+        query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email, profile_status FROM cases ORDER BY id DESC")
         df_c = pd.read_sql_query(query, engine)
     elif user_role == "Team Leader":
-        query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(province) = lower(:p) ORDER BY id DESC")
+        query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email, profile_status FROM cases WHERE lower(province) = lower(:p) ORDER BY id DESC")
         df_c = pd.read_sql_query(query, engine, params={"p": user_province})
     else:
-        query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e) ORDER BY id DESC")
+        query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email, profile_status FROM cases WHERE lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e) ORDER BY id DESC")
         df_c = pd.read_sql_query(query, engine, params={"e": user_email})
         
     if not df_c.empty:
-        return {f"ID #{row['id']} [HHID: {row['control_no'] or 'N/A'}]: {row['first_name']} {row['last_name']} ({row['province']})": row['id'] for _, row in df_c.iterrows()}
+        res = {}
+        for _, row in df_c.iterrows():
+            st_icon = "🟢" if str(row.get('profile_status', '')).lower() == 'completed' else "🟡"
+            lbl = f"{st_icon} ID #{row['id']} [HHID: {row['control_no'] or 'N/A'}]: {row['first_name']} {row['last_name']} ({row['province']})"
+            res[lbl] = row['id']
+        return res
     return {}
 
 def get_client_record(case_id):
@@ -367,12 +372,26 @@ if menu_selection == "📊 Executive Dashboard":
     else:
         df_all_cases = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e)"), engine, params={"e": user_email})
     
-    col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
+    total_beneficiaries = len(df_all_cases)
+    
+    # Calculate Encoding Status Analytics
+    if not df_all_cases.empty and 'profile_status' in df_all_cases.columns:
+        completed_cnt = len(df_all_cases[df_all_cases['profile_status'].str.lower() == 'completed'])
+        incomplete_cnt = total_beneficiaries - completed_cnt
+    else:
+        completed_cnt = 0
+        incomplete_cnt = total_beneficiaries
+
+    col_kpi1, col_kpi2, col_kpi3, col_kpi4, col_kpi5 = st.columns(5)
     with col_kpi1:
-        st.metric("Total Accessible Beneficiaries", len(df_all_cases))
+        st.metric("Total Beneficiaries", total_beneficiaries)
     with col_kpi2:
-        st.metric("Active Field Staff/Encoders", len(df_all_cases['staff_email'].dropna().unique()) if not df_all_cases.empty else 0)
+        st.metric("🟢 Completed Profiles", completed_cnt)
     with col_kpi3:
+        st.metric("🟡 Incomplete / Drafts", incomplete_cnt)
+    with col_kpi4:
+        st.metric("Active Field Staff", len(df_all_cases['staff_email'].dropna().unique()) if not df_all_cases.empty else 0)
+    with col_kpi5:
         st.metric("Provinces Covered", len(df_all_cases['province'].dropna().unique()) if not df_all_cases.empty else 0)
 
     st.divider()
@@ -437,11 +456,15 @@ elif menu_selection == "👤 1. Personal & Profiling":
             st.error(f"⚠️ **DUPLICATE DETECTED IN ENGLISH:** TFDCC Household ID No. '{control_no_val}' is already registered in the system under **{dup[1]} {dup[2]}** (Encoded by: {dup[3]}). Please verify before saving!")
 
     with st.form("personal_info_form"):
-        col_hdr1, col_hdr2 = st.columns(2)
+        col_hdr1, col_hdr2, col_hdr3 = st.columns([2, 2, 2])
         with col_hdr1:
             gis_date_picker = st.date_input("Date:", value=parse_date_str(c_data.get("gis_date"), datetime.today().date()))
         with col_hdr2:
             crn_number = st.text_input("Combatant Reference Number (CRN) / Client ID:", value=str(c_data.get("crn_number", "") or c_data.get("client_id", "") or ""))
+        with col_hdr3:
+            curr_prof_st = str(c_data.get("profile_status", "Incomplete / Draft"))
+            prof_st_idx = 0 if curr_prof_st.lower() != "completed" else 1
+            profile_status = st.selectbox("📌 Encoding Completion Status*", ["Incomplete / Draft", "Completed"], index=prof_st_idx, help="Pilia ang 'Completed' kung nahuman na ug na-fillup-an tanang kinahanglanon gikan Module 1 hangtod 9.")
 
         st.markdown("##### 🎖️ INVOLVEMENT (Pakikilahok)")
         col_inv1, col_inv2, col_inv3 = st.columns(3)
@@ -544,7 +567,7 @@ elif menu_selection == "👤 1. Personal & Profiling":
                     "motivations_joining": motivations_joining, "reasons_leaving": reasons_leaving, "intentions_motivations": intentions_motivations,
                     "dialects_spoken": dialects_spoken, "birth_cert_status": birth_cert_status, "birth_cert_registry": birth_cert_registry,
                     "marriage_cert_status": marriage_cert_status, "philhealth_status": philhealth_status, "philhealth_id": philhealth_id,
-                    "philhealth_category": philhealth_category, "staff_email": user_email, "encoded_by": user_email
+                    "philhealth_category": philhealth_category, "profile_status": profile_status, "staff_email": user_email, "encoded_by": user_email
                 }
                 
                 try:
@@ -900,7 +923,14 @@ elif menu_selection == "📊 Masterlist Database":
 
         if not df_my_entries.empty:
             st.success(f"📊 Total Personal Authorized Records: **{len(df_my_entries)} Beneficiaries**")
-            st.dataframe(df_my_entries, use_container_width=True)
+            
+            # Quick Status Filter
+            st_filter = st.selectbox("🔍 Filter Display by Encoding Completion Status:", ["ALL", "Completed", "Incomplete / Draft"])
+            df_display = df_my_entries.copy()
+            if st_filter != "ALL" and 'profile_status' in df_display.columns:
+                df_display = df_display[df_display['profile_status'].str.lower() == st_filter.lower()]
+                
+            st.dataframe(df_display, use_container_width=True)
             
             col_d1, col_d2 = st.columns([1, 1])
             with col_d1:
