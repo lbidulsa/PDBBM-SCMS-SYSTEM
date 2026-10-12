@@ -323,6 +323,7 @@ with st.sidebar:
                     if res_p and res_p[0] == old_p:
                         with engine.begin() as conn:
                             conn.execute(text("UPDATE user_accounts SET password = :p, require_change_pass = 0 WHERE lower(email) = lower(:e)"), {"p": new_p1, "e": user_email})
+                        st.toast("✅ Password updated successfully!", icon="🔑")
                         st.success("✅ Password successfully updated!")
                     else:
                         st.error("❌ Incorrect current password.")
@@ -524,10 +525,12 @@ elif menu_selection == "👤 1. Personal & Profiling":
             birthdate_str = bday_picker.strftime('%Y-%m-%d')
             gis_date_str = gis_date_picker.strftime('%m-%d-%Y')
             
-            if last_name and first_name and control_no_val:
+            if not last_name or not first_name or not control_no_val.strip():
+                st.error("⚠️ **REQUIRED FIELDS MISSING:** Palihug sulati ang Household ID No., First Name, ug Last Name!")
+            else:
                 params_save = {
-                    "control_no": control_no_val, "gis_date": gis_date_str, "client_id": crn_number,
-                    "last_name": last_name, "first_name": first_name, "middle_name": middle_name,
+                    "control_no": control_no_val.strip(), "gis_date": gis_date_str, "client_id": crn_number,
+                    "last_name": last_name.strip(), "first_name": first_name.strip(), "middle_name": middle_name,
                     "ext_name": ext_name, "alias": alias, "phone_no": phone_no, "birthdate": birthdate_str,
                     "age": age, "sex": sex, "civil_status": civil_status, "crn_number": crn_number,
                     "vot_status": vot_status, "ciac_status": ciac_status, "marriage_details": marriage_details,
@@ -544,21 +547,24 @@ elif menu_selection == "👤 1. Personal & Profiling":
                     "philhealth_category": philhealth_category, "staff_email": user_email, "encoded_by": user_email
                 }
                 
-                if selected_option == "-- ADD NEW BENEFICIARY --" and not c_data.get("id"):
-                    cols = ", ".join(params_save.keys())
-                    vals = ", ".join([f":{k}" for k in params_save.keys()])
-                    with engine.begin() as conn:
-                        conn.execute(text(f"INSERT INTO cases ({cols}) VALUES ({vals})"), params_save)
-                else:
-                    edit_id = c_data.get("id", selected_id)
-                    params_save["edit_id"] = edit_id
-                    set_clause = ", ".join([f"{k}=:{k}" for k in params_save.keys() if k != "edit_id" and k != "encoded_by"])
-                    with engine.begin() as conn:
-                        conn.execute(text(f"UPDATE cases SET {set_clause} WHERE id=:edit_id"), params_save)
-                
-                st.success("✅ Beneficiary record updated successfully!")
-                st.session_state["autofill_data"] = {}
-                st.rerun()
+                try:
+                    if selected_option == "-- ADD NEW BENEFICIARY --" and not c_data.get("id"):
+                        cols = ", ".join(params_save.keys())
+                        vals = ", ".join([f":{k}" for k in params_save.keys()])
+                        with engine.begin() as conn:
+                            conn.execute(text(f"INSERT INTO cases ({cols}) VALUES ({vals})"), params_save)
+                    else:
+                        edit_id = c_data.get("id", selected_id)
+                        params_save["edit_id"] = edit_id
+                        set_clause = ", ".join([f"{k}=:{k}" for k in params_save.keys() if k != "edit_id" and k != "encoded_by"])
+                        with engine.begin() as conn:
+                            conn.execute(text(f"UPDATE cases SET {set_clause} WHERE id=:edit_id"), params_save)
+                    
+                    st.toast("✅ Beneficiary record saved successfully to Supabase!", icon="🎉")
+                    st.success("✅ Beneficiary record updated successfully!")
+                    st.session_state["autofill_data"] = {}
+                except Exception as ex:
+                    st.error(f"❌ DATABASE ERROR: {ex}")
 
 # ==========================================
 # MODULES 2 TO 9: ALWAYS-VISIBLE FULL FORMS
@@ -625,6 +631,7 @@ elif menu_selection in [
                                     "sk": f_skills, "occ": f_occ, "pwd": f_pwd, "meds": f_meds
                                 }
                             )
+                        st.toast(f"✅ Added living family member: {f_name}", icon="👨‍👩‍👧‍👦")
                         st.success(f"✅ Added family member: {f_name}")
                         st.rerun()
                     elif not case_id:
@@ -664,6 +671,7 @@ elif menu_selection in [
                                     "dod": d_date_picker.strftime('%Y-%m-%d'), "rod": d_reason, "hdc": d_cert
                                 }
                             )
+                        st.toast(f"✅ Added deceased family member: {d_name}", icon="✝️")
                         st.success(f"✅ Added deceased family member: {d_name}")
                         st.rerun()
                     elif not case_id:
@@ -827,31 +835,35 @@ elif menu_selection in [
             sub_m = st.form_submit_button("💾 Save / Update Module Record", use_container_width=True)
             if sub_m:
                 if case_id:
-                    if menu_selection == "📋 3. Prob & Assistance":
-                        with engine.begin() as conn:
-                            conn.execute(text("UPDATE cases SET prob_desc=:pd, assist_requested=:ar WHERE id=:id"), {"pd": prob_desc, "ar": assist_requested, "id": case_id})
-                    elif menu_selection == "🏠 4. Infrastructure & Housing":
-                        with engine.begin() as conn:
-                            conn.execute(text("UPDATE cases SET house_ownership=:ho, housing_condition=:hc, house_renovate_pref=:hrp, roofing_material=:rm, walling_material=:wm, flooring_material=:fm, water_source=:ws, sanitation_toilet=:st, illness_6months=:i6, illness_duration=:id, illness_severity=:isev, govt_assistance_received=:gar, govt_assistance_usage=:gau, govt_assistance_impact=:gai WHERE id=:case_id"), {"ho": house_ownership, "hc": housing_condition, "hrp": house_renovate_pref, "rm": roofing_material, "wm": walling_material, "fm": flooring_material, "ws": water_source, "st": sanitation_toilet, "i6": illness_6months, "id": illness_duration, "isev": illness_severity, "gar": govt_assistance_received, "gau": govt_assistance_usage, "gai": govt_assistance_impact, "case_id": case_id})
-                    elif menu_selection == "🌾 5. Agricultural Info":
-                        with engine.begin() as conn:
-                            conn.execute(text("UPDATE cases SET land_ownership=:lo, land_ownership_type=:lot, land_location=:ll, land_area=:la, agri_equipment=:ae, agri_cultivation_involvement=:aci, crops_specify=:cs, livestock_specify=:ls, fisheries_specify=:fs, support_services_specify=:sss, farming_interest=:fi, farming_assistance_needed=:fan, farming_infra_needed=:fin, farming_skills_desired=:fsd WHERE id=:case_id"), {"lo": land_ownership, "lot": land_ownership_type, "ll": land_location, "la": land_area, "ae": agri_equipment, "aci": agri_cultivation_involvement, "cs": crops_specify, "ls": livestock_specify, "fs": fisheries_specify, "sss": support_services_specify, "fi": farming_interest, "fan": farming_assistance_needed, "fin": farming_infra_needed, "fsd": farming_skills_desired, "case_id": case_id})
-                    elif menu_selection == "💼 6. Livelihood & Employment":
-                        with engine.begin() as conn:
-                            conn.execute(text("UPDATE cases SET vehicles_owned=:vo, occupation_status=:os, occupation_specify=:ospec, desired_future_occ=:dfo, coop_membership=:cm, coop_name=:cn, coop_position=:cp, coop_duration=:cd, business_type=:bt, business_duration=:bd, business_goal=:bg, business_assets_owned=:bao, uniformed_service_interest=:usi, cfw_interest=:cfwi, cfw_preferred_work=:cfwpw WHERE id=:case_id"), {"vo": vehicles_owned, "os": occupation_status, "ospec": occupation_specify, "dfo": desired_future_occ, "cm": coop_membership, "cn": coop_name, "cp": coop_position, "cd": coop_duration, "bt": business_type, "bd": business_duration, "bg": business_goal, "bao": business_assets_owned, "usi": uniformed_service_interest, "cfwi": cfw_interest, "cfwpw": cfw_preferred_work, "case_id": case_id})
-                    elif menu_selection == "🧠 7. Psychosocial Support":
-                        with engine.begin() as conn:
-                            conn.execute(text("UPDATE cases SET mental_health_impact=:mhi, psychological_mgmt=:pm, family_rel_change=:frc, support_system=:ss, feeling_safety=:fs, uniformed_personnel_feeling=:upf, threats_perceived=:tp, current_time_spent=:cts, hopes_aspirations=:ha, transformation_challenges=:tc, coping_mechanisms=:cm, personal_growth=:pg, barangay_council_member=:bcm, pending_legal_cases=:plc, arrest_history=:ah, message_to_govt=:mtg WHERE id=:case_id"), {"mhi": mental_health_impact, "pm": psychological_mgmt, "frc": family_rel_change, "ss": support_system, "fs": feeling_safety, "upf": uniformed_personnel_feeling, "tp": threats_perceived, "cts": current_time_spent, "ha": hopes_aspirations, "tc": transformation_challenges, "cm": coping_mechanisms, "pg": personal_growth, "bcm": barangay_council_member, "plc": pending_legal_cases, "ah": arrest_history, "mtg": message_to_govt, "case_id": case_id})
-                    elif menu_selection == "🎓 8. Capacity Building":
-                        with engine.begin() as conn:
-                            conn.execute(text("UPDATE cases SET existing_skills=:es, skills_acquisition_mode=:sam, skills_training_wish=:stw, skills_training_pref=:stp, formal_education_wish=:few, als_enrollment_wish=:aew, education_docs_available=:eda, dependents_education_wish=:dew, study_grant_dependents=:sgd, skills_training_desired_list=:stdl, skills_training_dependents=:std WHERE id=:case_id"), {"es": existing_skills, "sam": skills_acquisition_mode, "stw": skills_training_wish, "stp": skills_training_pref, "few": formal_education_wish, "aew": als_enrollment_wish, "eda": education_docs_available, "dew": dependents_education_wish, "sgd": study_grant_dependents, "stdl": skills_training_desired_list, "std": skills_training_dependents, "case_id": case_id})
-                    elif menu_selection == "📝 9. Assessment & Updates":
-                        with engine.begin() as conn:
-                            conn.execute(text("UPDATE cases SET sw_assessment=:sa, place_of_interview=:poi, interviewed_by=:ib, approved_by=:ab WHERE id=:case_id"), {"sa": sw_assessment, "poi": place_of_interview, "ib": user_email, "ab": approved_by, "case_id": case_id})
-                    
-                    st.success(f"✅ Successfully saved {menu_selection} information for beneficiary ID #{case_id}!")
+                    try:
+                        if menu_selection == "📋 3. Prob & Assistance":
+                            with engine.begin() as conn:
+                                conn.execute(text("UPDATE cases SET prob_desc=:pd, assist_requested=:ar WHERE id=:id"), {"pd": prob_desc, "ar": assist_requested, "id": case_id})
+                        elif menu_selection == "🏠 4. Infrastructure & Housing":
+                            with engine.begin() as conn:
+                                conn.execute(text("UPDATE cases SET house_ownership=:ho, housing_condition=:hc, house_renovate_pref=:hrp, roofing_material=:rm, walling_material=:wm, flooring_material=:fm, water_source=:ws, sanitation_toilet=:st, illness_6months=:i6, illness_duration=:id, illness_severity=:isev, govt_assistance_received=:gar, govt_assistance_usage=:gau, govt_assistance_impact=:gai WHERE id=:case_id"), {"ho": house_ownership, "hc": housing_condition, "hrp": house_renovate_pref, "rm": roofing_material, "wm": walling_material, "fm": flooring_material, "ws": water_source, "st": sanitation_toilet, "i6": illness_6months, "id": illness_duration, "isev": illness_severity, "gar": govt_assistance_received, "gau": govt_assistance_usage, "gai": govt_assistance_impact, "case_id": case_id})
+                        elif menu_selection == "🌾 5. Agricultural Info":
+                            with engine.begin() as conn:
+                                conn.execute(text("UPDATE cases SET land_ownership=:lo, land_ownership_type=:lot, land_location=:ll, land_area=:la, agri_equipment=:ae, agri_cultivation_involvement=:aci, crops_specify=:cs, livestock_specify=:ls, fisheries_specify=:fs, support_services_specify=:sss, farming_interest=:fi, farming_assistance_needed=:fan, farming_infra_needed=:fin, farming_skills_desired=:fsd WHERE id=:case_id"), {"lo": land_ownership, "lot": land_ownership_type, "ll": land_location, "la": land_area, "ae": agri_equipment, "aci": agri_cultivation_involvement, "cs": crops_specify, "ls": livestock_specify, "fs": fisheries_specify, "sss": support_services_specify, "fi": farming_interest, "fan": farming_assistance_needed, "fin": farming_infra_needed, "fsd": farming_skills_desired, "case_id": case_id})
+                        elif menu_selection == "💼 6. Livelihood & Employment":
+                            with engine.begin() as conn:
+                                conn.execute(text("UPDATE cases SET vehicles_owned=:vo, occupation_status=:os, occupation_specify=:ospec, desired_future_occ=:dfo, coop_membership=:cm, coop_name=:cn, coop_position=:cp, coop_duration=:cd, business_type=:bt, business_duration=:bd, business_goal=:bg, business_assets_owned=:bao, uniformed_service_interest=:usi, cfw_interest=:cfwi, cfw_preferred_work=:cfwpw WHERE id=:case_id"), {"vo": vehicles_owned, "os": occupation_status, "ospec": occupation_specify, "dfo": desired_future_occ, "cm": coop_membership, "cn": coop_name, "cp": coop_position, "cd": coop_duration, "bt": business_type, "bd": business_duration, "bg": business_goal, "bao": business_assets_owned, "usi": uniformed_service_interest, "cfwi": cfw_interest, "cfwpw": cfw_preferred_work, "case_id": case_id})
+                        elif menu_selection == "🧠 7. Psychosocial Support":
+                            with engine.begin() as conn:
+                                conn.execute(text("UPDATE cases SET mental_health_impact=:mhi, psychological_mgmt=:pm, family_rel_change=:frc, support_system=:ss, feeling_safety=:fs, uniformed_personnel_feeling=:upf, threats_perceived=:tp, current_time_spent=:cts, hopes_aspirations=:ha, transformation_challenges=:tc, coping_mechanisms=:cm, personal_growth=:pg, barangay_council_member=:bcm, pending_legal_cases=:plc, arrest_history=:ah, message_to_govt=:mtg WHERE id=:case_id"), {"mhi": mental_health_impact, "pm": psychological_mgmt, "frc": family_rel_change, "ss": support_system, "fs": feeling_safety, "upf": uniformed_personnel_feeling, "tp": threats_perceived, "cts": current_time_spent, "ha": hopes_aspirations, "tc": transformation_challenges, "cm": coping_mechanisms, "pg": personal_growth, "bcm": barangay_council_member, "plc": pending_legal_cases, "ah": arrest_history, "mtg": message_to_govt, "case_id": case_id})
+                        elif menu_selection == "🎓 8. Capacity Building":
+                            with engine.begin() as conn:
+                                conn.execute(text("UPDATE cases SET existing_skills=:es, skills_acquisition_mode=:sam, skills_training_wish=:stw, skills_training_pref=:stp, formal_education_wish=:few, als_enrollment_wish=:aew, education_docs_available=:eda, dependents_education_wish=:dew, study_grant_dependents=:sgd, skills_training_desired_list=:stdl, skills_training_dependents=:std WHERE id=:case_id"), {"es": existing_skills, "sam": skills_acquisition_mode, "stw": skills_training_wish, "stp": skills_training_pref, "few": formal_education_wish, "aew": als_enrollment_wish, "eda": education_docs_available, "dew": dependents_education_wish, "sgd": study_grant_dependents, "stdl": skills_training_desired_list, "std": skills_training_dependents, "case_id": case_id})
+                        elif menu_selection == "📝 9. Assessment & Updates":
+                            with engine.begin() as conn:
+                                conn.execute(text("UPDATE cases SET sw_assessment=:sa, place_of_interview=:poi, interviewed_by=:ib, approved_by=:ab WHERE id=:case_id"), {"sa": sw_assessment, "poi": place_of_interview, "ib": user_email, "ab": approved_by, "case_id": case_id})
+                        
+                        st.toast(f"✅ Saved {menu_selection} to Supabase!", icon="💾")
+                        st.success(f"✅ Successfully saved {menu_selection} information for beneficiary ID #{case_id}!")
+                    except Exception as ex:
+                        st.error(f"❌ DATABASE ERROR: {ex}")
                 else:
-                    st.info("ℹ️ Form processed. Select or add a client in Module 1 to bind data.")
+                    st.warning("⚠️ Palihug pagpili una og beneficiary record sa Module 1!")
 
 # ==========================================
 # MASTERLIST DATABASE MODULE
@@ -919,6 +931,7 @@ elif menu_selection == "📊 Masterlist Database":
                                     """),
                                     {"cid": req_case_id, "hhid": req_hhid, "cn": req_cname, "rb": user_email, "r": del_reason.strip(), "rd": req_date}
                                 )
+                            st.toast("📩 Deletion request submitted to Admin!", icon="📩")
                             st.success(f"📩 Deletion request for ID #{req_case_id} submitted to Super Admin for approval!")
                         else:
                             st.error("⚠️ Please provide a reason for the deletion request.")
@@ -983,6 +996,7 @@ elif menu_selection == "📊 Masterlist Database":
                         }
                         
                         st.session_state["redirect_to_module"] = target_module_choice[:2]
+                        st.toast("🚀 Data migrated successfully!", icon="✨")
                         st.success(f"✅ Data migrated! Redirecting to Module {target_module_choice}...")
                         st.rerun()
         else:
@@ -1043,6 +1057,7 @@ elif menu_selection == "📊 Masterlist Database":
                             conn.execute(text("DELETE FROM deceased_family_members WHERE case_id = :id"), {"id": c_id})
                             conn.execute(text("UPDATE deletion_requests SET status = 'APPROVED' WHERE id = :id"), {"id": req_id})
                         
+                        st.toast("✅ Case deleted & backed up to Archive!", icon="📦")
                         st.success(f"✅ Approved! Case #{c_id} ({c_name}) has been backed up to Archive and deleted from active database.")
                         st.rerun()
 
@@ -1050,6 +1065,7 @@ elif menu_selection == "📊 Masterlist Database":
                     if st.button("❌ Reject Request", use_container_width=True):
                         with engine.begin() as conn:
                             conn.execute(text("UPDATE deletion_requests SET status = 'REJECTED' WHERE id = :id"), {"id": req_id})
+                        st.toast("❌ Deletion request rejected.", icon="🚫")
                         st.info(f"❌ Deletion request for Case #{c_id} was rejected.")
                         st.rerun()
             else:
@@ -1086,6 +1102,7 @@ elif menu_selection == "📊 Masterlist Database":
                                 conn.execute(text(f"INSERT INTO cases ({col_names}) VALUES ({placeholders})"), row_dict)
                                 conn.execute(text("DELETE FROM deleted_cases_archive WHERE archive_id = :id"), {"id": arch_id})
                             
+                            st.toast("🔄 Record restored back to active masterlist!", icon="🎉")
                             st.success("✅ Record restored successfully back to active cases masterlist!")
                             st.rerun()
             else:
@@ -1122,6 +1139,7 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
                                 text("INSERT INTO user_accounts (first_name, last_name, province, user_role, email, password, require_change_pass) VALUES (:fn, :ln, :p, :r, :e, :pass, 1)"),
                                 {"fn": u_fname, "ln": u_lname, "p": u_province, "r": u_role, "e": u_email, "pass": curr_gen_pass}
                             )
+                        st.toast(f"✅ User {u_fname} registered!", icon="👤")
                         st.success(f"✅ Registered user: {u_fname} {u_lname} ({u_role})!")
                         
                         if send_via_email:
@@ -1164,6 +1182,7 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
                 new_temp_pass = generate_random_password()
                 with engine.begin() as conn:
                     conn.execute(text("UPDATE user_accounts SET password = :p, require_change_pass = 1 WHERE id = :id"), {"p": new_temp_pass, "id": res_id})
+                st.toast("🔑 Password reset initiated!", icon="🔐")
                 st.success(f"✅ Reset Password initiated for {res_email}!")
                 
                 if send_reset_via_email:
