@@ -183,11 +183,14 @@ if not st.session_state["authenticated"] or not st.session_state.get("user_info"
             login_submitted = st.form_submit_button("🔒 Login to System", use_container_width=True)
             
             if login_submitted:
-                with engine.connect() as conn:
-                    user_res = conn.execute(
-                        text("SELECT first_name, last_name, province, user_role, email, require_change_pass FROM user_accounts WHERE lower(email) = lower(:e) AND password = :p"),
-                        {"e": login_email.strip(), "p": login_pass.strip()}
-                    ).fetchone()
+                try:
+                    with engine.connect() as conn:
+                        user_res = conn.execute(
+                            text("SELECT first_name, last_name, province, user_role, email, require_change_pass FROM user_accounts WHERE lower(email) = lower(:e) AND password = :p"),
+                            {"e": login_email.strip(), "p": login_pass.strip()}
+                        ).fetchone()
+                except Exception:
+                    user_res = None
                 
                 if user_res:
                     st.session_state["authenticated"] = True
@@ -245,15 +248,26 @@ user_name = u_info.get("name", "User Account")
 PROVINCES_LIST = ["Misamis Oriental", "Misamis Occidental", "Bukidnon", "Lanao del Norte", "Lanao del Sur", "RPMO", "CO"]
 
 def get_beneficiary_options():
-    if user_role in ["Superuser", "Admin"]:
-        query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email, profile_status FROM cases ORDER BY id DESC")
-        df_c = pd.read_sql_query(query, engine)
-    elif user_role == "Team Leader":
-        query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email, profile_status FROM cases WHERE lower(province) = lower(:p) ORDER BY id DESC")
-        df_c = pd.read_sql_query(query, engine, params={"p": user_province})
-    else:
-        query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email, profile_status FROM cases WHERE lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e) ORDER BY id DESC")
-        df_c = pd.read_sql_query(query, engine, params={"e": user_email})
+    try:
+        if user_role in ["Superuser", "Admin"]:
+            query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email, profile_status FROM cases ORDER BY id DESC")
+            df_c = pd.read_sql_query(query, engine)
+        elif user_role == "Team Leader":
+            query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email, profile_status FROM cases WHERE lower(province) = lower(:p) ORDER BY id DESC")
+            df_c = pd.read_sql_query(query, engine, params={"p": user_province})
+        else:
+            query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email, profile_status FROM cases WHERE lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e) ORDER BY id DESC")
+            df_c = pd.read_sql_query(query, engine, params={"e": user_email})
+    except Exception:
+        if user_role in ["Superuser", "Admin"]:
+            query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases ORDER BY id DESC")
+            df_c = pd.read_sql_query(query, engine)
+        elif user_role == "Team Leader":
+            query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(province) = lower(:p) ORDER BY id DESC")
+            df_c = pd.read_sql_query(query, engine, params={"p": user_province})
+        else:
+            query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e) ORDER BY id DESC")
+            df_c = pd.read_sql_query(query, engine, params={"e": user_email})
         
     if not df_c.empty:
         res = {}
@@ -267,9 +281,12 @@ def get_beneficiary_options():
 def get_client_record(case_id):
     if not case_id:
         return {}
-    df = pd.read_sql_query(text("SELECT * FROM cases WHERE id = :id"), engine, params={"id": case_id})
-    if not df.empty:
-        return df.iloc[0].to_dict()
+    try:
+        df = pd.read_sql_query(text("SELECT * FROM cases WHERE id = :id"), engine, params={"id": case_id})
+        if not df.empty:
+            return df.iloc[0].to_dict()
+    except Exception:
+        pass
     return {}
 
 menu_options_list = [
@@ -299,8 +316,12 @@ with st.sidebar:
     st.caption(f"🔑 Role: **{user_role}** | 📍 Jurisdiction: **{user_province}**")
     st.caption(f"📧 Email: `{user_email}`")
     
-    df_my_cnt = pd.read_sql_query(text("SELECT id FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e)"), engine, params={"e": user_email})
-    st.info(f"📝 **Your Encoded Entries:** {len(df_my_cnt)} Beneficiaries")
+    try:
+        df_my_cnt = pd.read_sql_query(text("SELECT id FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e)"), engine, params={"e": user_email})
+        cnt_val = len(df_my_cnt)
+    except Exception:
+        cnt_val = 0
+    st.info(f"📝 **Your Encoded Entries:** {cnt_val} Beneficiaries")
 
     if user_role in ["Superuser", "Admin"]:
         try:
@@ -365,34 +386,47 @@ st.divider()
 if menu_selection == "📊 Executive Dashboard":
     st.subheader("📈 Executive Operations & Field Staff Performance Analytics")
     
-    if user_role in ["Superuser", "Admin"]:
-        df_all_cases = pd.read_sql_query(text("SELECT * FROM cases"), engine)
-    elif user_role == "Team Leader":
-        df_all_cases = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(province) = lower(:p)"), engine, params={"p": user_province})
-    else:
-        df_all_cases = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e)"), engine, params={"e": user_email})
+    try:
+        if user_role in ["Superuser", "Admin"]:
+            df_all_cases = pd.read_sql_query(text("SELECT * FROM cases"), engine)
+        elif user_role == "Team Leader":
+            df_all_cases = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(province) = lower(:p)"), engine, params={"p": user_province})
+        else:
+            df_all_cases = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e)"), engine, params={"e": user_email})
+    except Exception:
+        df_all_cases = pd.DataFrame()
     
     total_beneficiaries = len(df_all_cases)
     
+    # Calculate Male & Female Gender Breakdown
+    male_cnt = 0
+    female_cnt = 0
+    if not df_all_cases.empty and 'sex' in df_all_cases.columns:
+        male_cnt = len(df_all_cases[df_all_cases['sex'].astype(str).str.lower() == 'male'])
+        female_cnt = len(df_all_cases[df_all_cases['sex'].astype(str).str.lower() == 'female'])
+
     # Calculate Encoding Status Analytics
     if not df_all_cases.empty and 'profile_status' in df_all_cases.columns:
-        completed_cnt = len(df_all_cases[df_all_cases['profile_status'].str.lower() == 'completed'])
+        completed_cnt = len(df_all_cases[df_all_cases['profile_status'].astype(str).str.lower() == 'completed'])
         incomplete_cnt = total_beneficiaries - completed_cnt
     else:
         completed_cnt = 0
         incomplete_cnt = total_beneficiaries
 
-    col_kpi1, col_kpi2, col_kpi3, col_kpi4, col_kpi5 = st.columns(5)
+    # Render Executive KPI Summary Cards
+    col_kpi1, col_kpi2, col_kpi3, col_kpi4, col_kpi5, col_kpi6 = st.columns(6)
     with col_kpi1:
         st.metric("Total Beneficiaries", total_beneficiaries)
     with col_kpi2:
-        st.metric("🟢 Completed Profiles", completed_cnt)
+        st.metric("👨 Male Clients", male_cnt)
     with col_kpi3:
-        st.metric("🟡 Incomplete / Drafts", incomplete_cnt)
+        st.metric("👩 Female Clients", female_cnt)
     with col_kpi4:
-        st.metric("Active Field Staff", len(df_all_cases['staff_email'].dropna().unique()) if not df_all_cases.empty else 0)
+        st.metric("🟢 Completed Profiles", completed_cnt)
     with col_kpi5:
-        st.metric("Provinces Covered", len(df_all_cases['province'].dropna().unique()) if not df_all_cases.empty else 0)
+        st.metric("🟡 Incomplete / Drafts", incomplete_cnt)
+    with col_kpi6:
+        st.metric("Active Field Staff", len(df_all_cases['staff_email'].dropna().unique()) if not df_all_cases.empty and 'staff_email' in df_all_cases.columns else 0)
 
     st.divider()
     col_dash1, col_dash2 = st.columns(2)
@@ -407,7 +441,7 @@ if menu_selection == "📊 Executive Dashboard":
 
     with col_dash2:
         st.markdown("### 👥 Field Staff Summary Breakdown")
-        if not df_all_cases.empty:
+        if not df_all_cases.empty and 'province' in df_all_cases.columns and 'staff_email' in df_all_cases.columns:
             staff_summary = df_all_cases.groupby(['province', 'staff_email']).size().reset_index(name='Total Encoded Entries')
             staff_summary.columns = ['Province Jurisdiction', 'Staff Email / Encoder', 'Encoded Count']
             st.dataframe(staff_summary, use_container_width=True, hide_index=True)
@@ -447,13 +481,16 @@ elif menu_selection == "👤 1. Personal & Profiling":
     
     if control_no_val.strip() != "":
         current_id = c_data.get("id", 0)
-        with engine.connect() as conn:
-            dup = conn.execute(
-                text("SELECT id, first_name, last_name, staff_email FROM cases WHERE lower(control_no) = lower(:c) AND id != :id"),
-                {"c": control_no_val.strip(), "id": current_id}
-            ).fetchone()
-        if dup:
-            st.error(f"⚠️ **DUPLICATE DETECTED IN ENGLISH:** TFDCC Household ID No. '{control_no_val}' is already registered in the system under **{dup[1]} {dup[2]}** (Encoded by: {dup[3]}). Please verify before saving!")
+        try:
+            with engine.connect() as conn:
+                dup = conn.execute(
+                    text("SELECT id, first_name, last_name, staff_email FROM cases WHERE lower(control_no) = lower(:c) AND id != :id"),
+                    {"c": control_no_val.strip(), "id": current_id}
+                ).fetchone()
+            if dup:
+                st.error(f"⚠️ **DUPLICATE DETECTED IN ENGLISH:** TFDCC Household ID No. '{control_no_val}' is already registered in the system under **{dup[1]} {dup[2]}** (Encoded by: {dup[3]}). Please verify before saving!")
+        except Exception:
+            pass
 
     with st.form("personal_info_form"):
         col_hdr1, col_hdr2, col_hdr3 = st.columns([2, 2, 2])
@@ -587,7 +624,28 @@ elif menu_selection == "👤 1. Personal & Profiling":
                     st.success("✅ Beneficiary record updated successfully!")
                     st.session_state["autofill_data"] = {}
                 except Exception as ex:
-                    st.error(f"❌ DATABASE ERROR: {ex}")
+                    # Fallback retry if profile_status column is missing
+                    if "profile_status" in str(ex):
+                        del params_save["profile_status"]
+                        try:
+                            if selected_option == "-- ADD NEW BENEFICIARY --" and not c_data.get("id"):
+                                cols = ", ".join(params_save.keys())
+                                vals = ", ".join([f":{k}" for k in params_save.keys()])
+                                with engine.begin() as conn:
+                                    conn.execute(text(f"INSERT INTO cases ({cols}) VALUES ({vals})"), params_save)
+                            else:
+                                edit_id = c_data.get("id", selected_id)
+                                params_save["edit_id"] = edit_id
+                                set_clause = ", ".join([f"{k}=:{k}" for k in params_save.keys() if k != "edit_id" and k != "encoded_by"])
+                                with engine.begin() as conn:
+                                    conn.execute(text(f"UPDATE cases SET {set_clause} WHERE id=:edit_id"), params_save)
+                            st.toast("✅ Beneficiary record saved successfully!", icon="🎉")
+                            st.success("✅ Beneficiary record saved successfully!")
+                            st.session_state["autofill_data"] = {}
+                        except Exception as ex2:
+                            st.error(f"❌ DATABASE ERROR: {ex2}")
+                    else:
+                        st.error(f"❌ DATABASE ERROR: {ex}")
 
 # ==========================================
 # MODULES 2 TO 9: ALWAYS-VISIBLE FULL FORMS
@@ -642,29 +700,35 @@ elif menu_selection in [
                 sub_add_fam = st.form_submit_button("➕ Add Living Family Member to List")
                 if sub_add_fam:
                     if f_name and case_id:
-                        with engine.begin() as conn:
-                            conn.execute(
-                                text("""
-                                    INSERT INTO family_members (case_id, full_name, age, birthdate, gender, relationship, civil_status, ethnicity, skills, occupation, pwd_status, maintenance_meds)
-                                    VALUES (:cid, :fn, :age, :bd, :g, :rel, :cs, :eth, :sk, :occ, :pwd, :meds)
-                                """),
-                                {
-                                    "cid": case_id, "fn": f_name, "age": f_age, "bd": f_bday.strftime('%Y-%m-%d'),
-                                    "g": f_gender, "rel": f_rel, "cs": f_status, "eth": f_ethnicity,
-                                    "sk": f_skills, "occ": f_occ, "pwd": f_pwd, "meds": f_meds
-                                }
-                            )
-                        st.toast(f"✅ Added living family member: {f_name}", icon="👨‍👩‍👧‍👦")
-                        st.success(f"✅ Added family member: {f_name}")
-                        st.rerun()
+                        try:
+                            with engine.begin() as conn:
+                                conn.execute(
+                                    text("""
+                                        INSERT INTO family_members (case_id, full_name, age, birthdate, gender, relationship, civil_status, ethnicity, skills, occupation, pwd_status, maintenance_meds)
+                                        VALUES (:cid, :fn, :age, :bd, :g, :rel, :cs, :eth, :sk, :occ, :pwd, :meds)
+                                    """),
+                                    {
+                                        "cid": case_id, "fn": f_name, "age": f_age, "bd": f_bday.strftime('%Y-%m-%d'),
+                                        "g": f_gender, "rel": f_rel, "cs": f_status, "eth": f_ethnicity,
+                                        "sk": f_skills, "occ": f_occ, "pwd": f_pwd, "meds": f_meds
+                                    }
+                                )
+                            st.toast(f"✅ Added living family member: {f_name}", icon="👨‍👩‍👧‍👦")
+                            st.success(f"✅ Added family member: {f_name}")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(f"❌ DATABASE ERROR: {ex}")
                     elif not case_id:
                         st.warning("⚠️ Please select a beneficiary record first before adding family members.")
 
         if case_id:
-            df_fam = pd.read_sql_query(text("SELECT full_name AS 'Full Name', birthdate AS 'Birthdate', age AS 'Age', gender AS 'Gender', relationship AS 'Relationship', civil_status AS 'Civil Status', occupation AS 'Occupation', pwd_status AS 'PWD Status' FROM family_members WHERE case_id = :cid"), engine, params={"cid": case_id})
-            if not df_fam.empty:
-                st.write("##### 📋 Registered Living Family Members History:")
-                st.dataframe(df_fam, use_container_width=True, hide_index=True)
+            try:
+                df_fam = pd.read_sql_query(text("SELECT full_name AS 'Full Name', birthdate AS 'Birthdate', age AS 'Age', gender AS 'Gender', relationship AS 'Relationship', civil_status AS 'Civil Status', occupation AS 'Occupation', pwd_status AS 'PWD Status' FROM family_members WHERE case_id = :cid"), engine, params={"cid": case_id})
+                if not df_fam.empty:
+                    st.write("##### 📋 Registered Living Family Members History:")
+                    st.dataframe(df_fam, use_container_width=True, hide_index=True)
+            except Exception:
+                pass
 
         st.divider()
         st.markdown("##### ✝️ Deceased Family Members (Yumaong Kamag-anak)")
@@ -683,28 +747,34 @@ elif menu_selection in [
                 sub_add_dec = st.form_submit_button("➕ Add Deceased Family Member to List")
                 if sub_add_dec:
                     if d_name and case_id:
-                        with engine.begin() as conn:
-                            conn.execute(
-                                text("""
-                                    INSERT INTO deceased_family_members (case_id, full_name, relationship, date_of_death, reason_of_death, has_death_cert)
-                                    VALUES (:cid, :fn, :rel, :dod, :rod, :hdc)
-                                """),
-                                {
-                                    "cid": case_id, "fn": d_name, "rel": d_rel,
-                                    "dod": d_date_picker.strftime('%Y-%m-%d'), "rod": d_reason, "hdc": d_cert
-                                }
-                            )
-                        st.toast(f"✅ Added deceased family member: {d_name}", icon="✝️")
-                        st.success(f"✅ Added deceased family member: {d_name}")
-                        st.rerun()
+                        try:
+                            with engine.begin() as conn:
+                                conn.execute(
+                                    text("""
+                                        INSERT INTO deceased_family_members (case_id, full_name, relationship, date_of_death, reason_of_death, has_death_cert)
+                                        VALUES (:cid, :fn, :rel, :dod, :rod, :hdc)
+                                    """),
+                                    {
+                                        "cid": case_id, "fn": d_name, "rel": d_rel,
+                                        "dod": d_date_picker.strftime('%Y-%m-%d'), "rod": d_reason, "hdc": d_cert
+                                    }
+                                )
+                            st.toast(f"✅ Added deceased family member: {d_name}", icon="✝️")
+                            st.success(f"✅ Added deceased family member: {d_name}")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(f"❌ DATABASE ERROR: {ex}")
                     elif not case_id:
                         st.warning("⚠️ Please select a beneficiary record first before adding family members.")
 
         if case_id:
-            df_dec = pd.read_sql_query(text("SELECT full_name AS 'Full Name', relationship AS 'Relationship', date_of_death AS 'Date of Death', reason_of_death AS 'Cause of Death', has_death_cert AS 'Death Cert' FROM deceased_family_members WHERE case_id = :cid"), engine, params={"cid": case_id})
-            if not df_dec.empty:
-                st.write("##### 📋 Registered Deceased Family Members History:")
-                st.dataframe(df_dec, use_container_width=True, hide_index=True)
+            try:
+                df_dec = pd.read_sql_query(text("SELECT full_name AS 'Full Name', relationship AS 'Relationship', date_of_death AS 'Date of Death', reason_of_death AS 'Cause of Death', has_death_cert AS 'Death Cert' FROM deceased_family_members WHERE case_id = :cid"), engine, params={"cid": case_id})
+                if not df_dec.empty:
+                    st.write("##### 📋 Registered Deceased Family Members History:")
+                    st.dataframe(df_dec, use_container_width=True, hide_index=True)
+            except Exception:
+                pass
 
     else:
         with st.form("module_general_form"):
@@ -911,15 +981,18 @@ elif menu_selection == "📊 Masterlist Database":
     with tabs[0]:
         st.markdown(f"### 👤 Personal Encoding Panel ({user_name})")
         
-        if user_role in ["Superuser", "Admin"]:
-            df_my_entries = pd.read_sql_query(text("SELECT * FROM cases ORDER BY id DESC"), engine)
-            st.info("👑 **Super User Mode:** Displaying ALL encoded entries across the system.")
-        elif user_role == "Team Leader":
-            df_my_entries = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(province) = lower(:p) ORDER BY id DESC"), engine, params={"p": user_province})
-            st.info(f"🔰 **Team Leader Mode:** Displaying entries under **{user_province}** jurisdiction.")
-        else:
-            df_my_entries = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e) ORDER BY id DESC"), engine, params={"e": user_email})
-            st.info("🔒 **User Security Restriction:** Displaying STRICTLY your own encoded entries.")
+        try:
+            if user_role in ["Superuser", "Admin"]:
+                df_my_entries = pd.read_sql_query(text("SELECT * FROM cases ORDER BY id DESC"), engine)
+                st.info("👑 **Super User Mode:** Displaying ALL encoded entries across the system.")
+            elif user_role == "Team Leader":
+                df_my_entries = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(province) = lower(:p) ORDER BY id DESC"), engine, params={"p": user_province})
+                st.info(f"🔰 **Team Leader Mode:** Displaying entries under **{user_province}** jurisdiction.")
+            else:
+                df_my_entries = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e) ORDER BY id DESC"), engine, params={"e": user_email})
+                st.info("🔒 **User Security Restriction:** Displaying STRICTLY your own encoded entries.")
+        except Exception:
+            df_my_entries = pd.DataFrame()
 
         if not df_my_entries.empty:
             st.success(f"📊 Total Personal Authorized Records: **{len(df_my_entries)} Beneficiaries**")
@@ -928,7 +1001,7 @@ elif menu_selection == "📊 Masterlist Database":
             st_filter = st.selectbox("🔍 Filter Display by Encoding Completion Status:", ["ALL", "Completed", "Incomplete / Draft"])
             df_display = df_my_entries.copy()
             if st_filter != "ALL" and 'profile_status' in df_display.columns:
-                df_display = df_display[df_display['profile_status'].str.lower() == st_filter.lower()]
+                df_display = df_display[df_display['profile_status'].astype(str).str.lower() == st_filter.lower()]
                 
             st.dataframe(df_display, use_container_width=True)
             
@@ -953,34 +1026,41 @@ elif menu_selection == "📊 Masterlist Database":
                         if del_reason.strip():
                             req_case_id, req_hhid, req_cname = del_options[selected_del]
                             req_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            with engine.begin() as conn:
-                                conn.execute(
-                                    text("""
-                                        INSERT INTO deletion_requests (case_id, control_no, client_name, requested_by, reason, request_date, status)
-                                        VALUES (:cid, :hhid, :cn, :rb, :r, :rd, 'PENDING')
-                                    """),
-                                    {"cid": req_case_id, "hhid": req_hhid, "cn": req_cname, "rb": user_email, "r": del_reason.strip(), "rd": req_date}
-                                )
-                            st.toast("📩 Deletion request submitted to Admin!", icon="📩")
-                            st.success(f"📩 Deletion request for ID #{req_case_id} submitted to Super Admin for approval!")
+                            try:
+                                with engine.begin() as conn:
+                                    conn.execute(
+                                        text("""
+                                            INSERT INTO deletion_requests (case_id, control_no, client_name, requested_by, reason, request_date, status)
+                                            VALUES (:cid, :hhid, :cn, :rb, :r, :rd, 'PENDING')
+                                        """),
+                                        {"cid": req_case_id, "hhid": req_hhid, "cn": req_cname, "rb": user_email, "r": del_reason.strip(), "rd": req_date}
+                                    )
+                                st.toast("📩 Deletion request submitted to Admin!", icon="📩")
+                                st.success(f"📩 Deletion request for ID #{req_case_id} submitted to Super Admin for approval!")
+                            except Exception as ex:
+                                st.error(f"❌ DATABASE ERROR: {ex}")
                         else:
                             st.error("⚠️ Please provide a reason for the deletion request.")
         else:
             st.info("No recorded beneficiary entries found under your user account.")
 
     with tabs[1]:
-        query = "SELECT * FROM cases WHERE 1=1"
-        params = {}
-        if user_role not in ["Superuser", "Admin"] and user_province not in ["RPMO", "CO"]:
-            if user_role == "Team Leader":
-                query += " AND lower(province) = lower(:p)"
-                params["p"] = user_province
-            else:
-                query += " AND (lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e))"
-                params["e"] = user_email
+        try:
+            query = "SELECT * FROM cases WHERE 1=1"
+            params = {}
+            if user_role not in ["Superuser", "Admin"] and user_province not in ["RPMO", "CO"]:
+                if user_role == "Team Leader":
+                    query += " AND lower(province) = lower(:p)"
+                    params["p"] = user_province
+                else:
+                    query += " AND (lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e))"
+                    params["e"] = user_email
 
-        query += " ORDER BY id DESC"
-        df_master = pd.read_sql_query(text(query), engine, params=params)
+            query += " ORDER BY id DESC"
+            df_master = pd.read_sql_query(text(query), engine, params=params)
+        except Exception:
+            df_master = pd.DataFrame()
+
         st.metric("Total Authorized Masterlist Records", len(df_master))
         st.dataframe(df_master, use_container_width=True)
 
@@ -1034,12 +1114,15 @@ elif menu_selection == "📊 Masterlist Database":
 
     with tabs[3]:
         st.markdown("### 📥 Export Reports Control Portal")
-        if user_role in ["Superuser", "Admin"]:
-            df_exp_final = pd.read_sql_query(text("SELECT * FROM cases"), engine)
-        elif user_role == "Team Leader":
-            df_exp_final = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(province) = lower(:p)"), engine, params={"p": user_province})
-        else:
-            df_exp_final = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e)"), engine, params={"e": user_email})
+        try:
+            if user_role in ["Superuser", "Admin"]:
+                df_exp_final = pd.read_sql_query(text("SELECT * FROM cases"), engine)
+            elif user_role == "Team Leader":
+                df_exp_final = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(province) = lower(:p)"), engine, params={"p": user_province})
+            else:
+                df_exp_final = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e)"), engine, params={"e": user_email})
+        except Exception:
+            df_exp_final = pd.DataFrame()
 
         if len(df_exp_final) == 0:
             st.warning("⚠️ Access Restricted: Account currently has 0 encoded entries under your scope.")
@@ -1057,7 +1140,10 @@ elif menu_selection == "📊 Masterlist Database":
     if user_role in ["Superuser", "Admin"]:
         with tabs[4]:
             st.markdown("### 🗑️ Super Admin Deletion Request Approvals")
-            df_req = pd.read_sql_query(text("SELECT id, case_id AS 'Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', reason AS 'Reason for Deletion', request_date AS 'Request Date' FROM deletion_requests WHERE status = 'PENDING' ORDER BY id DESC"), engine)
+            try:
+                df_req = pd.read_sql_query(text("SELECT id, case_id AS 'Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', reason AS 'Reason for Deletion', request_date AS 'Request Date' FROM deletion_requests WHERE status = 'PENDING' ORDER BY id DESC"), engine)
+            except Exception:
+                df_req = pd.DataFrame()
             
             if not df_req.empty:
                 st.dataframe(df_req, use_container_width=True)
@@ -1070,40 +1156,49 @@ elif menu_selection == "📊 Masterlist Database":
                 
                 with col_act1:
                     if st.button("✅ Approve & Auto-Backup to Archive", use_container_width=True):
-                        df_raw = pd.read_sql_query(text("SELECT * FROM cases WHERE id = :id"), engine, params={"id": c_id})
-                        raw_json = df_raw.to_json(orient="records") if not df_raw.empty else "{}"
-                        
-                        archived_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        with engine.begin() as conn:
-                            conn.execute(
-                                text("""
-                                    INSERT INTO deleted_cases_archive (original_case_id, control_no, client_name, requested_by, deletion_reason, deleted_by, archived_at, raw_case_data_json)
-                                    VALUES (:ocid, :cno, :cn, :rb, :dr, :db, :aat, :json)
-                                """),
-                                {"ocid": c_id, "cno": c_hhid, "cn": c_name, "rb": c_req_by, "dr": c_reason, "db": user_email, "aat": archived_at, "json": raw_json}
-                            )
-                            conn.execute(text("DELETE FROM cases WHERE id = :id"), {"id": c_id})
-                            conn.execute(text("DELETE FROM family_members WHERE case_id = :id"), {"id": c_id})
-                            conn.execute(text("DELETE FROM deceased_family_members WHERE case_id = :id"), {"id": c_id})
-                            conn.execute(text("UPDATE deletion_requests SET status = 'APPROVED' WHERE id = :id"), {"id": req_id})
-                        
-                        st.toast("✅ Case deleted & backed up to Archive!", icon="📦")
-                        st.success(f"✅ Approved! Case #{c_id} ({c_name}) has been backed up to Archive and deleted from active database.")
-                        st.rerun()
+                        try:
+                            df_raw = pd.read_sql_query(text("SELECT * FROM cases WHERE id = :id"), engine, params={"id": c_id})
+                            raw_json = df_raw.to_json(orient="records") if not df_raw.empty else "{}"
+                            
+                            archived_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            with engine.begin() as conn:
+                                conn.execute(
+                                    text("""
+                                        INSERT INTO deleted_cases_archive (original_case_id, control_no, client_name, requested_by, deletion_reason, deleted_by, archived_at, raw_case_data_json)
+                                        VALUES (:ocid, :cno, :cn, :rb, :dr, :db, :aat, :json)
+                                    """),
+                                    {"ocid": c_id, "cno": c_hhid, "cn": c_name, "rb": c_req_by, "dr": c_reason, "db": user_email, "aat": archived_at, "json": raw_json}
+                                )
+                                conn.execute(text("DELETE FROM cases WHERE id = :id"), {"id": c_id})
+                                conn.execute(text("DELETE FROM family_members WHERE case_id = :id"), {"id": c_id})
+                                conn.execute(text("DELETE FROM deceased_family_members WHERE case_id = :id"), {"id": c_id})
+                                conn.execute(text("UPDATE deletion_requests SET status = 'APPROVED' WHERE id = :id"), {"id": req_id})
+                            
+                            st.toast("✅ Case deleted & backed up to Archive!", icon="📦")
+                            st.success(f"✅ Approved! Case #{c_id} ({c_name}) has been backed up to Archive and deleted from active database.")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(f"❌ DATABASE ERROR: {ex}")
 
                 with col_act2:
                     if st.button("❌ Reject Request", use_container_width=True):
-                        with engine.begin() as conn:
-                            conn.execute(text("UPDATE deletion_requests SET status = 'REJECTED' WHERE id = :id"), {"id": req_id})
-                        st.toast("❌ Deletion request rejected.", icon="🚫")
-                        st.info(f"❌ Deletion request for Case #{c_id} was rejected.")
-                        st.rerun()
+                        try:
+                            with engine.begin() as conn:
+                                conn.execute(text("UPDATE deletion_requests SET status = 'REJECTED' WHERE id = :id"), {"id": req_id})
+                            st.toast("❌ Deletion request rejected.", icon="🚫")
+                            st.info(f"❌ Deletion request for Case #{c_id} was rejected.")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(f"❌ DATABASE ERROR: {ex}")
             else:
                 st.info("🎉 No pending deletion requests at this time.")
 
         with tabs[5]:
             st.markdown("### 📦 Deleted Cases Recycle Bin & Archive (Auto-Backup)")
-            df_arch = pd.read_sql_query(text("SELECT archive_id AS 'Archive ID', original_case_id AS 'Original Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', deletion_reason AS 'Reason', deleted_by AS 'Approved By', archived_at AS 'Date Deleted' FROM deleted_cases_archive ORDER BY archive_id DESC"), engine)
+            try:
+                df_arch = pd.read_sql_query(text("SELECT archive_id AS 'Archive ID', original_case_id AS 'Original Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', deletion_reason AS 'Reason', deleted_by AS 'Approved By', archived_at AS 'Date Deleted' FROM deleted_cases_archive ORDER BY archive_id DESC"), engine)
+            except Exception:
+                df_arch = pd.DataFrame()
             
             if not df_arch.empty:
                 st.dataframe(df_arch, use_container_width=True)
@@ -1115,26 +1210,29 @@ elif menu_selection == "📊 Masterlist Database":
                 
                 if st.button("🔄 Restore Selected Record to Active Database", use_container_width=True):
                     arch_id = arch_options[selected_arch_id]
-                    with engine.connect() as conn:
-                        res_json = conn.execute(text("SELECT raw_case_data_json FROM deleted_cases_archive WHERE archive_id = :id"), {"id": arch_id}).fetchone()
-                    if res_json and res_json[0]:
-                        df_res = pd.read_json(res_json[0], orient="records")
-                        if not df_res.empty:
-                            row_dict = df_res.iloc[0].to_dict()
-                            if 'id' in row_dict:
-                                del row_dict['id']
-                            
-                            cols = list(row_dict.keys())
-                            placeholders = ", ".join([f":{k}" for k in cols])
-                            col_names = ", ".join(cols)
-                            
-                            with engine.begin() as conn:
-                                conn.execute(text(f"INSERT INTO cases ({col_names}) VALUES ({placeholders})"), row_dict)
-                                conn.execute(text("DELETE FROM deleted_cases_archive WHERE archive_id = :id"), {"id": arch_id})
-                            
-                            st.toast("🔄 Record restored back to active masterlist!", icon="🎉")
-                            st.success("✅ Record restored successfully back to active cases masterlist!")
-                            st.rerun()
+                    try:
+                        with engine.connect() as conn:
+                            res_json = conn.execute(text("SELECT raw_case_data_json FROM deleted_cases_archive WHERE archive_id = :id"), {"id": arch_id}).fetchone()
+                        if res_json and res_json[0]:
+                            df_res = pd.read_json(res_json[0], orient="records")
+                            if not df_res.empty:
+                                row_dict = df_res.iloc[0].to_dict()
+                                if 'id' in row_dict:
+                                    del row_dict['id']
+                                
+                                cols = list(row_dict.keys())
+                                placeholders = ", ".join([f":{k}" for k in cols])
+                                col_names = ", ".join(cols)
+                                
+                                with engine.begin() as conn:
+                                    conn.execute(text(f"INSERT INTO cases ({col_names}) VALUES ({placeholders})"), row_dict)
+                                    conn.execute(text("DELETE FROM deleted_cases_archive WHERE archive_id = :id"), {"id": arch_id})
+                                
+                                st.toast("🔄 Record restored back to active masterlist!", icon="🎉")
+                                st.success("✅ Record restored successfully back to active cases masterlist!")
+                                st.rerun()
+                    except Exception as ex:
+                        st.error(f"❌ DATABASE ERROR: {ex}")
             else:
                 st.info("No archived deleted records found.")
 
@@ -1199,8 +1297,11 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
             query_u += " AND (lower(first_name) LIKE lower(:s) OR lower(last_name) LIKE lower(:s) OR lower(email) LIKE lower(:s))"
             params_u["s"] = f"%{user_search_term.strip()}%"
             
-        with engine.connect() as conn:
-            u_list = conn.execute(text(query_u), params_u).fetchall()
+        try:
+            with engine.connect() as conn:
+                u_list = conn.execute(text(query_u), params_u).fetchall()
+        except Exception:
+            u_list = []
         
         if u_list:
             u_dict = {f"{r[1]} {r[2]} ({r[3]}) - [{r[4]}]": (r[0], r[3], f"{r[1]} {r[2]}", r[4]) for r in u_list}
@@ -1210,23 +1311,29 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
             if st.button("🔄 Reset Password Now", use_container_width=True):
                 res_id, res_email, res_full_name, res_role = u_dict[selected_reset_user]
                 new_temp_pass = generate_random_password()
-                with engine.begin() as conn:
-                    conn.execute(text("UPDATE user_accounts SET password = :p, require_change_pass = 1 WHERE id = :id"), {"p": new_temp_pass, "id": res_id})
-                st.toast("🔑 Password reset initiated!", icon="🔐")
-                st.success(f"✅ Reset Password initiated for {res_email}!")
-                
-                if send_reset_via_email:
-                    sent_ok, msg_res = send_credentials_email(res_email, res_full_name, new_temp_pass, res_role)
-                    if sent_ok:
-                        st.success(f"📩 Reset password emailed directly to {res_email}!")
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text("UPDATE user_accounts SET password = :p, require_change_pass = 1 WHERE id = :id"), {"p": new_temp_pass, "id": res_id})
+                    st.toast("🔑 Password reset initiated!", icon="🔐")
+                    st.success(f"✅ Reset Password initiated for {res_email}!")
+                    
+                    if send_reset_via_email:
+                        sent_ok, msg_res = send_credentials_email(res_email, res_full_name, new_temp_pass, res_role)
+                        if sent_ok:
+                            st.success(f"📩 Reset password emailed directly to {res_email}!")
+                        else:
+                            st.warning(f"⚠️ Email dispatch status: {msg_res}")
+                            st.info(f"🔑 **BACKUP RESET PASS:** `{new_temp_pass}`")
                     else:
-                        st.warning(f"⚠️ Email dispatch status: {msg_res}")
-                        st.info(f"🔑 **BACKUP RESET PASS:** `{new_temp_pass}`")
-                else:
-                    st.info(f"🔑 **NEW TEMPORARY PASS:** `{new_temp_pass}`")
+                        st.info(f"🔑 **NEW TEMPORARY PASS:** `{new_temp_pass}`")
+                except Exception as ex:
+                    st.error(f"❌ DATABASE ERROR: {ex}")
         else:
             st.warning("No users match your search criteria.")
 
     st.divider()
-    df_users = pd.read_sql_query(text("SELECT id, first_name || ' ' || last_name AS Name, email AS Email, user_role AS Role, province AS Province FROM user_accounts"), engine)
-    st.dataframe(df_users, use_container_width=True, hide_index=True)
+    try:
+        df_users = pd.read_sql_query(text("SELECT id, first_name || ' ' || last_name AS Name, email AS Email, user_role AS Role, province AS Province FROM user_accounts"), engine)
+        st.dataframe(df_users, use_container_width=True, hide_index=True)
+    except Exception:
+        pass
