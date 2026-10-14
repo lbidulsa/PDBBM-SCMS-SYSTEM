@@ -23,11 +23,18 @@ st.set_page_config(
 st.markdown("""
     <style>
     .stApp { background-color: #F8F9FA; }
+    .dialect-box {
+        background-color: #FFFFFF;
+        border: 1px solid #CBD5E1;
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 10px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# DATA PRIVACY ACT (RA 10173) AUTOMATIC POP-UP MODAL
+# DATA PRIVACY ACT (RA 10173) POP-UP MODAL
 # ==========================================
 if "privacy_accepted" not in st.session_state:
     st.session_state["privacy_accepted"] = False
@@ -102,7 +109,7 @@ def send_credentials_email(recipient_email, recipient_name, temp_password, user_
         return False, str(e)
 
 # ==========================================
-# 3. DATABASE CONNECTION ENGINE (SUPABASE POSTGRESQL)
+# 3. DATABASE CONNECTION ENGINE
 # ==========================================
 DEFAULT_DB_URL = "postgresql+psycopg2://postgres.oxyvjstdncnnefbkilaa:5GLJZg5tWE28Wud9@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres"
 
@@ -164,6 +171,9 @@ def parse_date_str(date_str, default_date=date(1995, 1, 1)):
             return datetime.strptime(str(date_str).strip(), "%m-%d-%Y").date()
         except Exception:
             return default_date
+
+DIALECTS_LIST_1 = ["English", "Tagalog", "Bikol", "Cebuano", "Hiligaynon", "Ilokano", "Kagan", "Pampango", "Iranun"]
+DIALECTS_LIST_2 = ["Pangasinense", "Waray", "Chavacano", "Maranao", "Mindanaoan", "Tausūg", "Yakan"]
 
 # ==========================================
 # 4. LOGIN PORTAL
@@ -398,14 +408,12 @@ if menu_selection == "📊 Executive Dashboard":
     
     total_beneficiaries = len(df_all_cases)
     
-    # Calculate Male & Female Gender Breakdown
     male_cnt = 0
     female_cnt = 0
     if not df_all_cases.empty and 'sex' in df_all_cases.columns:
         male_cnt = len(df_all_cases[df_all_cases['sex'].astype(str).str.lower() == 'male'])
         female_cnt = len(df_all_cases[df_all_cases['sex'].astype(str).str.lower() == 'female'])
 
-    # Calculate Encoding Status Analytics
     if not df_all_cases.empty and 'profile_status' in df_all_cases.columns:
         completed_cnt = len(df_all_cases[df_all_cases['profile_status'].astype(str).str.lower() == 'completed'])
         incomplete_cnt = total_beneficiaries - completed_cnt
@@ -413,7 +421,6 @@ if menu_selection == "📊 Executive Dashboard":
         completed_cnt = 0
         incomplete_cnt = total_beneficiaries
 
-    # Render Executive KPI Summary Cards
     col_kpi1, col_kpi2, col_kpi3, col_kpi4, col_kpi5, col_kpi6 = st.columns(6)
     with col_kpi1:
         st.metric("Total Beneficiaries", total_beneficiaries)
@@ -478,7 +485,8 @@ elif menu_selection == "👤 1. Personal & Profiling":
         st.info(f"✏ Editing Local Database Beneficiary: **{c_data.get('first_name','')} {c_data.get('last_name','')}**")
 
     control_no_val = st.text_input("TFDCC Household ID No.*:", value=str(c_data.get("control_no", "") or ""))
-    
+    dc_serial_no = st.text_input("TFDCC DC Serial Number (for MILF):", value=str(c_data.get("dc_serial_no", "") or ""))
+
     if control_no_val.strip() != "":
         current_id = c_data.get("id", 0)
         try:
@@ -488,7 +496,7 @@ elif menu_selection == "👤 1. Personal & Profiling":
                     {"c": control_no_val.strip(), "id": current_id}
                 ).fetchone()
             if dup:
-                st.error(f"⚠️ **DUPLICATE DETECTED IN ENGLISH:** TFDCC Household ID No. '{control_no_val}' is already registered in the system under **{dup[1]} {dup[2]}** (Encoded by: {dup[3]}). Please verify before saving!")
+                st.error(f"⚠️ **DUPLICATE DETECTED:** TFDCC Household ID No. '{control_no_val}' is already registered in the system under **{dup[1]} {dup[2]}** (Encoded by: {dup[3]}). Please verify before saving!")
         except Exception:
             pass
 
@@ -501,12 +509,12 @@ elif menu_selection == "👤 1. Personal & Profiling":
         with col_hdr3:
             curr_prof_st = str(c_data.get("profile_status", "Incomplete / Draft"))
             prof_st_idx = 0 if curr_prof_st.lower() != "completed" else 1
-            profile_status = st.selectbox("📌 Encoding Completion Status*", ["Incomplete / Draft", "Completed"], index=prof_st_idx, help="Pilia ang 'Completed' kung nahuman na ug na-fillup-an tanang kinahanglanon gikan Module 1 hangtod 9.")
+            profile_status = st.selectbox("📌 Encoding Completion Status*", ["Incomplete / Draft", "Completed"], index=prof_st_idx)
 
         st.markdown("##### 🎖️ INVOLVEMENT (Pakikilahok)")
         col_inv1, col_inv2, col_inv3 = st.columns(3)
         with col_inv1:
-            affiliated_group = st.selectbox("Affiliated Group/Organization*", ["MILF", "MNLF", "KAPATIRAN (RPMP-RPA-ABB)", "CPP/NPA/NDF", "CPLA", "Private Armed Group", "FVE", "None"], index=0)
+            affiliated_group = st.selectbox("Affiliated Group/Organization*", ["MILF", "MNLF", "KAPATIRAN (RPMP-RPA-ABB)", "CPP/NPA/NDF", "CPLA (Cordillera People's Liberation Army)", "Private Armed Group", "FVE", "None"], index=0)
             fve_specify = st.text_input("FVE (pls specify):", value=str(c_data.get("fve_specify", "") or ""))
             pag_specify = st.text_input("Private Armed Group (pls specify):", value=str(c_data.get("pag_specify", "") or ""))
         with col_inv2:
@@ -515,6 +523,12 @@ elif menu_selection == "👤 1. Personal & Profiling":
         with col_inv3:
             rank_role = st.text_input("Rank / Role within Group:", value=str(c_data.get("rank_role", "") or ""))
             duration_involvement = st.text_input("Duration of Involvement:", value=str(c_data.get("duration_involvement", "") or ""))
+
+        col_act1, col_act2 = st.columns(2)
+        with col_act1:
+            locations_activities = st.text_input("Locations Where Activities Took Place:", value=str(c_data.get("locations_activities", "") or ""))
+        with col_act2:
+            types_activities = st.text_input("Types of Activities Involved:", value=str(c_data.get("types_activities", "") or ""))
 
         st.divider()
         st.markdown("##### 👤 Client Name & Contact Details")
@@ -526,7 +540,7 @@ elif menu_selection == "👤 1. Personal & Profiling":
             ext_name = st.text_input("Ext. Name (Sr, Jr, I, II)", value=str(c_data.get("ext_name", "") or ""))
             alias = st.text_input("Alias / Karaniwang Tawag", value=str(c_data.get("alias", "") or ""))
         with col2:
-            purok = st.text_input("Purok/Street", value=str(c_data.get("purok", "") or ""))
+            purok = st.text_input("Purok/Street/House No.", value=str(c_data.get("purok", "") or ""))
             barangay = st.text_input("Barangay", value=str(c_data.get("barangay", "") or ""))
             city_muni = st.text_input("City/Municipality", value=str(c_data.get("city_muni", "") or ""))
             p_idx = PROVINCES_LIST.index(user_province) if user_province in PROVINCES_LIST else 0
@@ -543,9 +557,9 @@ elif menu_selection == "👤 1. Personal & Profiling":
             sex = st.selectbox("Sex*", ["Male", "Female"], index=0 if c_data.get("sex") != "Female" else 1)
             civil_status = st.selectbox("Civil Status", ["Single", "Married", "Widowed", "Separated", "Common Law"], index=0)
         with col4:
-            marriage_details = st.selectbox("Marriage Details (if Married)", ["N/A", "Monogamous", "Polygamous"], index=0)
+            marriage_details = st.selectbox("Marriage Details (if Married)", ["N/A", "Monogamous (isang asawa lang)", "Polygamous (higit isang asawa)"], index=0)
             num_wives = st.number_input("How many wives (if Polygamous)?", min_value=0, max_value=10, value=int(c_data.get("num_wives", 0) or 0))
-            wife_order = st.selectbox("For Married Female Combatants:", ["N/A", "First Wife", "Second Wife", "Third Wife"], index=0)
+            wife_order = st.selectbox("For Married Female Combatants:", ["N/A", "First Wife", "Second Wife", "Third Wife", "Fourth Wife and up"], index=0)
 
         st.divider()
         st.markdown("##### 📜 Biographical & Social Protection Info")
@@ -557,47 +571,98 @@ elif menu_selection == "👤 1. Personal & Profiling":
             physical_disability = st.selectbox("Physical Disability Status:", ["None", "Visual Impairment", "Hearing Impairment", "Speech Impairment", "Physically Handicapped"], index=0)
             health_conditions_maint = st.text_input("Health Conditions & Maintenance Medicine:", value=str(c_data.get("health_conditions_maint", "") or ""))
         with col_b2:
-            education_type = st.selectbox("Education Type:", ["Public", "Private", "Non-Formal", "Religious (Madrasa/Seminarian)", "Informal"], index=0)
+            education_type = st.selectbox("Education Type:", ["Public", "Private", "Formal", "Non-Formal", "Religious (Madrasa/Seminarian/etc.)", "Informal"], index=0)
             school_name_dates = st.text_input("Name of Educational Institution & Dates:", value=str(c_data.get("school_name_dates", "") or ""))
-            education_level = st.text_input("Educational Level Attained:", value=str(c_data.get("education_level", "") or ""))
+            education_level = st.selectbox("Educational Level Attained:", ["Primary", "Secondary", "Tertiary", "Post-Graduate", "N/A"], index=0)
             occupation_before = st.text_input("Occupation Before Involvement:", value=str(c_data.get("occupation_before", "") or ""))
             current_occupation = st.text_input("Current Occupation (After Disengagement):", value=str(c_data.get("current_occupation", "") or ""))
         with col_b3:
             motivations_joining = st.text_area("Motivations for Joining:", value=str(c_data.get("motivations_joining", "") or ""))
             reasons_leaving = st.text_area("Events Leading to Disengagement:", value=str(c_data.get("reasons_leaving", "") or ""))
             intentions_motivations = st.text_area("Current Intentions & Motivations:", value=str(c_data.get("intentions_motivations", "") or ""))
-            dialects_spoken = st.text_input("Dialects Spoken/Read/Written:", value=str(c_data.get("dialects_spoken", "") or ""))
 
+        # =========================================================
+        # DIALECTS CHECKBOX MATRIX (GIS FORM COMPLIANT)
+        # =========================================================
+        st.divider()
+        st.markdown("##### 🗣️ What dialect are you able to? (Anong diyalekto ang iyong alam gamitin?)")
+        
+        saved_dialects_str = str(c_data.get("dialects_spoken", "") or "")
+        dialect_selections = {}
+        grid_col1, grid_col2 = st.columns(2)
+        
+        with grid_col1:
+            st.markdown("**List of Dialects (Group 1)** | **SPEAK** | **READ** | **WRITE**")
+            for d_name in DIALECTS_LIST_1:
+                dc1, dc2, dc3, dc4 = st.columns([3, 2, 2, 2])
+                with dc1:
+                    st.write(f"**{d_name}**")
+                with dc2:
+                    spk = st.checkbox("Speak", value=(f"{d_name}_SPEAK" in saved_dialects_str or f"{d_name}" in saved_dialects_str), key=f"chk_spk_{d_name}")
+                with dc3:
+                    rd = st.checkbox("Read", value=(f"{d_name}_READ" in saved_dialects_str), key=f"chk_rd_{d_name}")
+                with dc4:
+                    wrt = st.checkbox("Write", value=(f"{d_name}_WRITE" in saved_dialects_str), key=f"chk_wrt_{d_name}")
+                dialect_selections[d_name] = {"speak": spk, "read": rd, "write": wrt}
+
+        with grid_col2:
+            st.markdown("**List of Dialects (Group 2)** | **SPEAK** | **READ** | **WRITE**")
+            for d_name in DIALECTS_LIST_2:
+                dc1, dc2, dc3, dc4 = st.columns([3, 2, 2, 2])
+                with dc1:
+                    st.write(f"**{d_name}**")
+                with dc2:
+                    spk = st.checkbox("Speak", value=(f"{d_name}_SPEAK" in saved_dialects_str), key=f"chk_spk_{d_name}")
+                with dc3:
+                    rd = st.checkbox("Read", value=(f"{d_name}_READ" in saved_dialects_str), key=f"chk_rd_{d_name}")
+                with dc4:
+                    wrt = st.checkbox("Write", value=(f"{d_name}_WRITE" in saved_dialects_str), key=f"chk_wrt_{d_name}")
+                dialect_selections[d_name] = {"speak": spk, "read": rd, "write": wrt}
+
+        st.divider()
         st.markdown("##### 🛡️ Social Protection Certificates & PhilHealth")
         col_sp1, col_sp2, col_sp3 = st.columns(3)
         with col_sp1:
             birth_cert_status = st.selectbox("Birth Certificate Status:", ["Yes", "No"], index=0)
+            birth_cert_auth = st.selectbox("Birth Cert Authenticated (PSA)?", ["Yes", "No"], index=0)
             birth_cert_registry = st.text_input("Birth Cert Date & Place of Registry:", value=str(c_data.get("birth_cert_registry", "") or ""))
         with col_sp2:
             marriage_cert_status = st.selectbox("Marriage Certificate Status:", ["Yes", "No", "N/A"], index=0)
+            marriage_cert_auth = st.selectbox("Marriage Cert Authenticated?", ["Yes", "No", "N/A"], index=0)
             philhealth_status = st.selectbox("PhilHealth Member Status:", ["Yes (Active)", "Yes (Inactive)", "No"], index=0)
         with col_sp3:
             philhealth_id = st.text_input("PhilHealth Number:", value=str(c_data.get("philhealth_id", "") or ""))
-            philhealth_category = st.selectbox("PhilHealth Category:", ["Direct Contributor", "Indirect Contributor", "Formal Economy", "Informal Economy", "OFW", "Domestic Worker", "Lifetime Member", "Sponsored Member", "Senior Citizen", "Indigent", "Group Enrollment", "4Ps Member"], index=0)
+            philhealth_category = st.selectbox("PhilHealth Category:", ["Direct Contributor", "Indirect Contributor", "Formal Economy", "Informal Economy", "OFW", "Domestic Workers", "Lifetime Members", "Sponsored Members", "Senior Citizen", "Indigent", "Group Enrollment", "4Ps Member"], index=0)
 
         submit_t1 = st.form_submit_button("💾 Save / Update Personal Record", use_container_width=True)
         if submit_t1:
             birthdate_str = bday_picker.strftime('%Y-%m-%d')
             gis_date_str = gis_date_picker.strftime('%m-%d-%Y')
             
+            formatted_dialects_list = []
+            for d_key, d_vals in dialect_selections.items():
+                abilities = []
+                if d_vals["speak"]: abilities.append("SPEAK")
+                if d_vals["read"]: abilities.append("READ")
+                if d_vals["write"]: abilities.append("WRITE")
+                if abilities:
+                    formatted_dialects_list.append(f"{d_key} ({', '.join(abilities)})")
+            
+            dialects_spoken = "; ".join(formatted_dialects_list) if formatted_dialects_list else "None"
+
             if not last_name or not first_name or not control_no_val.strip():
                 st.error("⚠️ **REQUIRED FIELDS MISSING:** Palihug sulati ang Household ID No., First Name, ug Last Name!")
             else:
                 params_save = {
-                    "control_no": control_no_val.strip(), "gis_date": gis_date_str, "client_id": crn_number,
+                    "control_no": control_no_val.strip(), "dc_serial_no": dc_serial_no.strip(), "gis_date": gis_date_str, "client_id": crn_number,
                     "last_name": last_name.strip(), "first_name": first_name.strip(), "middle_name": middle_name,
                     "ext_name": ext_name, "alias": alias, "phone_no": phone_no, "birthdate": birthdate_str,
                     "age": age, "sex": sex, "civil_status": civil_status, "crn_number": crn_number,
                     "vot_status": vot_status, "ciac_status": ciac_status, "marriage_details": marriage_details,
                     "num_wives": num_wives, "wife_order": wife_order, "affiliated_group": affiliated_group,
                     "fve_specify": fve_specify, "pag_specify": pag_specify, "rank_role": rank_role,
-                    "duration_involvement": duration_involvement, "purok": purok, "barangay": barangay,
-                    "city_muni": city_muni, "province": province, "region": region, "place_of_birth": place_of_birth,
+                    "duration_involvement": duration_involvement, "locations_activities": locations_activities, "types_activities": types_activities,
+                    "purok": purok, "barangay": barangay, "city_muni": city_muni, "province": province, "region": region, "place_of_birth": place_of_birth,
                     "ethnicity": ethnicity, "place_of_integration": place_of_integration, "physical_disability": physical_disability,
                     "health_conditions_maint": health_conditions_maint, "education_type": education_type, "school_name_dates": school_name_dates,
                     "education_level": education_level, "occupation_before": occupation_before, "current_occupation": current_occupation,
@@ -624,31 +689,10 @@ elif menu_selection == "👤 1. Personal & Profiling":
                     st.success("✅ Beneficiary record updated successfully!")
                     st.session_state["autofill_data"] = {}
                 except Exception as ex:
-                    # Fallback retry if profile_status column is missing
-                    if "profile_status" in str(ex):
-                        del params_save["profile_status"]
-                        try:
-                            if selected_option == "-- ADD NEW BENEFICIARY --" and not c_data.get("id"):
-                                cols = ", ".join(params_save.keys())
-                                vals = ", ".join([f":{k}" for k in params_save.keys()])
-                                with engine.begin() as conn:
-                                    conn.execute(text(f"INSERT INTO cases ({cols}) VALUES ({vals})"), params_save)
-                            else:
-                                edit_id = c_data.get("id", selected_id)
-                                params_save["edit_id"] = edit_id
-                                set_clause = ", ".join([f"{k}=:{k}" for k in params_save.keys() if k != "edit_id" and k != "encoded_by"])
-                                with engine.begin() as conn:
-                                    conn.execute(text(f"UPDATE cases SET {set_clause} WHERE id=:edit_id"), params_save)
-                            st.toast("✅ Beneficiary record saved successfully!", icon="🎉")
-                            st.success("✅ Beneficiary record saved successfully!")
-                            st.session_state["autofill_data"] = {}
-                        except Exception as ex2:
-                            st.error(f"❌ DATABASE ERROR: {ex2}")
-                    else:
-                        st.error(f"❌ DATABASE ERROR: {ex}")
+                    st.error(f"❌ DATABASE ERROR: {ex}")
 
 # ==========================================
-# MODULES 2 TO 9: ALWAYS-VISIBLE FULL FORMS
+# MODULES 2 TO 9: EXPANDED FULL FORMS
 # ==========================================
 elif menu_selection in [
     "👨‍👩‍👧‍👦 2. Family & Health", "📋 3. Prob & Assistance", "🏠 4. Infrastructure & Housing", 
@@ -688,14 +732,20 @@ elif menu_selection in [
                     f_age = today.year - f_bday.year - ((today.month, today.day) < (f_bday.month, f_bday.day))
                     st.number_input("Calculated Age", value=int(f_age), disabled=True)
                     f_gender = st.selectbox("Gender", ["Male", "Female"])
-                with col_f2:
                     f_status = st.selectbox("Civil Status", ["Single", "Married", "Widowed", "Separated"])
+                with col_f2:
                     f_ethnicity = st.text_input("Ethnicity")
                     f_skills = st.text_input("Skills Possessed")
+                    f_occ = st.text_input("Occupation")
+                    f_income = st.text_input("Monthly Income (Buwanang Kita):", value="0.00")
+                    f_live_in_hh = st.selectbox("Live in your current household?", ["Yes", "No"])
                 with col_f3:
-                    f_occ = st.text_input("Occupation / Income Source")
                     f_pwd = st.selectbox("PWD Status / Kind of Disability", ["None", "With Disability"])
                     f_meds = st.text_input("Maintenance Medicine if Applicable")
+                    f_attending_school = st.selectbox("Attending School?", ["No", "Yes"])
+                    f_school_details = st.text_input("If Yes: Course, Level, Year, School Name:")
+                    f_highest_educ = st.text_input("Highest Educational Attainment:")
+                    f_other_govt = st.text_input("Enrolled in Other Govt Programs (SSS, GSIS, PAG-IBIG):")
                 
                 sub_add_fam = st.form_submit_button("➕ Add Living Family Member to List")
                 if sub_add_fam:
@@ -704,13 +754,14 @@ elif menu_selection in [
                             with engine.begin() as conn:
                                 conn.execute(
                                     text("""
-                                        INSERT INTO family_members (case_id, full_name, age, birthdate, gender, relationship, civil_status, ethnicity, skills, occupation, pwd_status, maintenance_meds)
-                                        VALUES (:cid, :fn, :age, :bd, :g, :rel, :cs, :eth, :sk, :occ, :pwd, :meds)
+                                        INSERT INTO family_members (case_id, full_name, age, birthdate, gender, relationship, civil_status, ethnicity, skills, occupation, monthly_income, live_in_hh, pwd_status, maintenance_meds, attending_school, school_details, highest_educ, other_govt_prog)
+                                        VALUES (:cid, :fn, :age, :bd, :g, :rel, :cs, :eth, :sk, :occ, :inc, :li, :pwd, :meds, :ats, :sch, :he, :og)
                                     """),
                                     {
                                         "cid": case_id, "fn": f_name, "age": f_age, "bd": f_bday.strftime('%Y-%m-%d'),
                                         "g": f_gender, "rel": f_rel, "cs": f_status, "eth": f_ethnicity,
-                                        "sk": f_skills, "occ": f_occ, "pwd": f_pwd, "meds": f_meds
+                                        "sk": f_skills, "occ": f_occ, "inc": f_income, "li": f_live_in_hh, "pwd": f_pwd, "meds": f_meds,
+                                        "ats": f_attending_school, "sch": f_school_details, "he": f_highest_educ, "og": f_other_govt
                                     }
                                 )
                             st.toast(f"✅ Added living family member: {f_name}", icon="👨‍👩‍👧‍👦")
@@ -718,12 +769,10 @@ elif menu_selection in [
                             st.rerun()
                         except Exception as ex:
                             st.error(f"❌ DATABASE ERROR: {ex}")
-                    elif not case_id:
-                        st.warning("⚠️ Please select a beneficiary record first before adding family members.")
 
         if case_id:
             try:
-                df_fam = pd.read_sql_query(text("SELECT full_name AS 'Full Name', birthdate AS 'Birthdate', age AS 'Age', gender AS 'Gender', relationship AS 'Relationship', civil_status AS 'Civil Status', occupation AS 'Occupation', pwd_status AS 'PWD Status' FROM family_members WHERE case_id = :cid"), engine, params={"cid": case_id})
+                df_fam = pd.read_sql_query(text("SELECT full_name AS 'Full Name', birthdate AS 'Birthdate', age AS 'Age', gender AS 'Gender', relationship AS 'Relationship', occupation AS 'Occupation', monthly_income AS 'Income', live_in_hh AS 'Lives in HH', pwd_status AS 'PWD Status' FROM family_members WHERE case_id = :cid"), engine, params={"cid": case_id})
                 if not df_fam.empty:
                     st.write("##### 📋 Registered Living Family Members History:")
                     st.dataframe(df_fam, use_container_width=True, hide_index=True)
@@ -764,8 +813,6 @@ elif menu_selection in [
                             st.rerun()
                         except Exception as ex:
                             st.error(f"❌ DATABASE ERROR: {ex}")
-                    elif not case_id:
-                        st.warning("⚠️ Please select a beneficiary record first before adding family members.")
 
         if case_id:
             try:
@@ -780,7 +827,7 @@ elif menu_selection in [
         with st.form("module_general_form"):
             if menu_selection == "📋 3. Prob & Assistance":
                 st.markdown("##### 📋 Presenting Problem & Requested Assistance (Part IV)")
-                prob_desc = st.text_area("Presenting Problem Description", value=str(c_data.get("prob_desc", "")))
+                prob_desc = st.text_area("Presenting Problem Description (Include medical, legal, and social issues with client consent)", value=str(c_data.get("prob_desc", "")))
                 assist_requested = st.text_area("Specific Assistance Requested from DSWD", value=str(c_data.get("assist_requested", "")))
 
             elif menu_selection == "🏠 4. Infrastructure & Housing":
@@ -788,109 +835,125 @@ elif menu_selection in [
                 col_h1, col_h2 = st.columns(2)
                 with col_h1:
                     house_ownership = st.selectbox("Housing Ownership Status", ["Owned house and lot", "Owned house only", "Owned lot only", "Rented", "Sharing with parents/relatives", "Informal Settler"])
-                    housing_condition = st.selectbox("Housing Condition", ["New house", "Old house", "Dilapidated House"])
+                    housing_condition = st.selectbox("Housing Condition", ["New house", "Old house", "Dilapidated House (Bahay na sira o lubhang napinsala)"])
                     house_renovate_pref = st.selectbox("Would you like to renovate your house?", ["Yes", "No"])
                     roofing_material = st.selectbox("Roofing Material", ["Concrete", "GI Sheet", "Nipa", "Others"])
                     walling_material = st.selectbox("Walling Material", ["Bamboo", "Concrete", "Nipa", "Wood/Lumber", "Others"])
                 with col_h2:
                     flooring_material = st.selectbox("Flooring Material", ["Bamboo", "Concrete", "Soil", "Wood/Lumber", "Others"])
-                    water_source = st.text_input("Source of Water", value=str(c_data.get("water_source", "")))
+                    water_source = st.selectbox("Source of Water", ["Within place of residence (Public Water Distributor/Wells/Delivery)", "Outside place of residence (Rivers/Rain)", "None"])
                     sanitation_toilet = st.selectbox("Sanitation (Restroom Access)", ["Yes (Inside home)", "Yes (Outside home)", "No / Communal"])
 
                 st.divider()
-                st.markdown("##### 🏥 Health Information & Government Assistance Access")
+                st.markdown("##### 🏥 Health & Government Assistance Access Checklist")
                 col_g1, col_g2 = st.columns(2)
                 with col_g1:
                     illness_6months = st.text_input("Illnesses Encountered in Last 6 Months:", value=str(c_data.get("illness_6months", "")))
                     illness_duration = st.text_input("Duration of Illness:", value=str(c_data.get("illness_duration", "")))
                     illness_severity = st.text_input("Severity / Immediate Attention Needed:", value=str(c_data.get("illness_severity", "")))
                 with col_g2:
-                    govt_assistance_received = st.text_area("Govt Programs Received in Last 5 Years:", value=str(c_data.get("govt_assistance_received", "")))
-                    govt_assistance_usage = st.text_area("Usage of Financial Assistance Received:", value=str(c_data.get("govt_assistance_usage", "")))
-                    govt_assistance_impact = st.selectbox("Extent Assistance Contributed:", ["Helped significantly", "Helped to some extent", "Helped only minimally", "Did not help"])
+                    govt_assistance_received = st.multiselect(
+                        "Government Programs Received in Last 5 Years:",
+                        ["4Ps", "SLP", "AICS", "PAMANA Program", "MNLF Educational Assistance", "DSWD KALAHI-CIDSS", "Social Pension", "Modified Shelter Assistance Program (MSAP)", "Other Agency Services"]
+                    )
+                    govt_assistance_usage = st.multiselect(
+                        "How Financial Assistance Was Mainly Used:",
+                        ["Food & basic necessities", "Livelihood or business", "Children's / Personal Education", "Medicines & medical expenses", "Farming or fishing activities", "House repair/construction", "Payment of debts", "Transportation", "Savings", "Others"]
+                    )
+                    govt_assistance_impact = st.selectbox("Extent Assistance Contributed to Family Well-Being:", ["Helped significantly (Malaki ang naitulong)", "Helped to some extent (Bahagyang nakatulong)", "Helped only minimally (Hindi gaanong nakatulong)", "Did not help (Hindi nakatulong)"])
 
             elif menu_selection == "🌾 5. Agricultural Info":
                 st.markdown("##### 🌾 Agricultural Information & Farming Engagement (Annex A2)")
                 col_a1, col_a2 = st.columns(2)
                 with col_a1:
                     land_ownership = st.selectbox("Do you own a land?", ["Yes", "No"])
-                    land_ownership_type = st.selectbox("Ownership Type", ["Titled", "Stewardship/Tenant", "Pre-patent", "CADT", "Rented", "N/A"])
+                    land_ownership_type = st.selectbox("Ownership Type", ["Titled (may titulo)", "Stewardship/Tenant", "Pre-patent", "Certificate of Ancestral Domain Title (CADT)", "Rented", "N/A"])
                     land_location = st.text_input("Land Location:", value=str(c_data.get("land_location", "")))
-                    land_area = st.text_input("Land Area:", value=str(c_data.get("land_area", "")))
-                    agri_equipment = st.selectbox("Agricultural Equipment Owned/Acquired:", ["Owned", "Acquired", "None"])
+                    land_area = st.text_input("Land Area (Hectares / sqm):", value=str(c_data.get("land_area", "")))
+                    agri_equipment = st.selectbox("Agricultural Equipment Status:", ["Owned", "Acquired", "None"])
                 with col_a2:
                     agri_cultivation_involvement = st.selectbox("Involved in Agricultural Cultivation?", ["Yes", "No"])
-                    crops_specify = st.text_input("Crops Produced:", value=str(c_data.get("crops_specify", "")))
-                    livestock_specify = st.text_input("Livestock & Poultry:", value=str(c_data.get("livestock_specify", "")))
-                    fisheries_specify = st.text_input("Fisheries Sector:", value=str(c_data.get("fisheries_specify", "")))
-                    support_services_specify = st.text_input("Agri Support Services:", value=str(c_data.get("support_services_specify", "")))
+                    crops_specify = st.multiselect("Crops Produced:", ["Banana", "Coconut", "Corn", "Fruit bearing trees", "Industrial crops (coffee, abaca, copra, sugarcane, rubber, cacao)", "Rice", "Root crops", "Vegetables", "Others"])
+                    livestock_specify = st.multiselect("Livestock & Poultry:", ["Carabao", "Cattle", "Chicken", "Duck", "Farmed raised fish", "Goat", "Horse", "Others"])
+                    fisheries_specify = st.multiselect("Fisheries Sector:", ["Freshwater fish (hito, tilapia)", "Seawater fish (bariles)", "Others"])
+                    support_services_specify = st.multiselect("Agri Support Services:", ["Agricultural supply", "Feeds", "Others"])
 
                 st.divider()
                 col_a3, col_a4 = st.columns(2)
                 with col_a3:
-                    farming_interest = st.selectbox("Do you want to engage in farming?", ["Yes", "No"])
-                    farming_assistance_needed = st.text_input("Specific Farming Assistance Needed:", value=str(c_data.get("farming_assistance_needed", "")))
+                    farming_interest = st.selectbox("Interesado ka ba sa pag-sasaka?", ["Yes", "No"])
+                    farming_assistance_needed = st.multiselect("Specific Farming Assistance Needed:", ["Agricultural products (seedlings, livestock, fish)", "Equipment or machineries", "Infrastructure (land, road, warehouse)", "Skills and training", "Working capital (Cash)", "Others"])
                 with col_a4:
-                    farming_infra_needed = st.text_input("Infra Needed:", value=str(c_data.get("farming_infra_needed", "")))
-                    farming_skills_desired = st.text_input("Farming Skills Enhancement Desired:", value=str(c_data.get("farming_skills_desired", "")))
+                    farming_infra_needed = st.multiselect("Infra Facilities Needed:", ["Farm to market road", "Fish landing bay", "Irrigation canal", "Multi purpose building", "Portable water system", "Solar electricity", "Warehouse", "Others"])
+                    farming_skills_desired = st.multiselect("Skills Enhancement Desired:", ["Cattle fattening", "Duck raising", "Goat raising", "Organic farming", "Others"])
 
             elif menu_selection == "💼 6. Livelihood & Employment":
                 st.markdown("##### 💼 Livelihood Investment & Employment Support (Annex A3)")
-                col_l1, col_l2 = st.columns(2)
-                with col_l1:
-                    vehicles_owned = st.text_input("Vehicles Owned & Quantity:", value=str(c_data.get("vehicles_owned", "")))
-                    occupation_status = st.selectbox("Employment / Occupation Status:", ["Self-employed (Business)", "Wage Earner (Employee)", "Wage Earner (Contract of Service/JO)", "Unemployed", "Not Applicable"])
-                    occupation_specify = st.text_input("Specify Current Occupation:", value=str(c_data.get("occupation_specify", "")))
-                    desired_future_occ = st.text_input("Desired Future Occupation:", value=str(c_data.get("desired_future_occ", "")))
-                with col_l2:
-                    coop_membership = st.selectbox("Cooperative / PO / Farmer Org Member?", ["Yes", "No"])
-                    coop_name = st.text_input("Name of Cooperative/Organization:", value=str(c_data.get("coop_name", "")))
-                    coop_position = st.text_input("Position / Role in Org:", value=str(c_data.get("coop_position", "")))
-                    coop_duration = st.text_input("Duration of Membership:", value=str(c_data.get("coop_duration", "")))
+                st.markdown("**Vehicle / Asset Inventory & Quantity:**")
+                col_v1, col_v2, col_v3 = st.columns(3)
+                with col_v1:
+                    v_boat = st.number_input("Boat (Qty):", min_value=0, value=0)
+                    v_tricycle = st.number_input("Tricycle (Qty):", min_value=0, value=0)
+                with col_v2:
+                    v_jeepney = st.number_input("Jeepney (Qty):", min_value=0, value=0)
+                    v_van = st.number_input("Van (Qty):", min_value=0, value=0)
+                with col_v3:
+                    v_motorcycle = st.number_input("Motorcycle Single (Qty):", min_value=0, value=0)
+                    v_others = st.text_input("Others (specify):")
 
                 st.divider()
-                st.markdown("##### 🏬 Business & Short-Term Employment")
-                col_l3, col_l4 = st.columns(2)
-                with col_l3:
-                    business_type = st.selectbox("Type of Business Engaged In:", ["Manufacturing business", "Merchandise store (Sari-sari/groceries)", "Service shop (Karenderia/repair/salon)", "Others", "None"])
+                col_l1, col_l2 = st.columns(2)
+                with col_l1:
+                    occupation_status = st.selectbox("Employment Status:", ["Self-employed (Business)", "Wage Earner (employee)", "Wage Earner (contract of service/job order)", "No", "Not Applicable"])
+                    occupation_specify = st.text_input("Specify Occupation Details:", value=str(c_data.get("occupation_specify", "")))
+                    desired_future_occ = st.text_input("Desired Future Occupation:", value=str(c_data.get("desired_future_occ", "")))
+                    coop_membership = st.selectbox("Member of Cooperative / PO / Farmer Org?", ["Yes", "No"])
+                    coop_name = st.text_input("Name of Cooperative/PO:", value=str(c_data.get("coop_name", "")))
+                with col_l2:
+                    business_type = st.selectbox("Type of Business Engaged In:", ["Manufacturing business (food, clothing, accessories)", "Merchandise store (sari-sari, groceries, buy&sell)", "Service shop (karenderia, repair, salon)", "Others", "None"])
                     business_duration = st.selectbox("Duration in Business:", ["Less than 6 months", "7 months to 1 year", "1 to 2 years", "3 years above", "N/A"])
                     business_goal = st.selectbox("Business Goal:", ["Expand business", "Diversify to a new one", "N/A"])
-                    business_assets_owned = st.text_input("Assets/Resources Owned:", value=str(c_data.get("business_assets_owned", "")))
-                with col_l4:
-                    uniformed_service_interest = st.text_input("Interest in Uniformed Services:", value=str(c_data.get("uniformed_service_interest", "")))
-                    cfw_interest = st.selectbox("Interested in Cash for Work (CFW)?", ["Yes", "No"])
-                    cfw_preferred_work = st.text_input("Preferred CFW Work:", value=str(c_data.get("cfw_preferred_work", "")))
+                    business_opportunities = st.multiselect("Opportunities Needed:", ["Access to financial institution/capital", "Access to ICT", "Access to market", "Access to trainings"])
+                    uniformed_interest = st.multiselect("Interested in Uniformed Services (Self/Next of Kin):", ["AFP", "PNP", "Coast Guard", "BJMP", "CAFGU", "Forest Guard (DENR)", "Others"])
+
+                st.divider()
+                st.markdown("##### 🚧 Short-Term Employment: Cash For Work (CFW)")
+                col_cfw1, col_cfw2 = st.columns(2)
+                with col_cfw1:
+                    cfw_interest = st.selectbox("Engage in Community Work via Cash For Work (CFW)?", ["Yes", "No"])
+                with col_cfw2:
+                    cfw_preferred_tasks = st.multiselect("Preferred Community CFW Tasks:", ["De-clogging of canal/waterway", "Flood control/diking", "Gardening", "Road cleaning/grass cutting", "Tree planting", "Others"])
 
             elif menu_selection == "🧠 7. Psychosocial Support":
-                st.markdown("##### 🧠 Psychosocial Support & Community Integration (Annex A4)")
+                st.markdown("##### 🧠 Psychosocial Support & Transformation (Annex A4)")
                 col_p1, col_p2 = st.columns(2)
                 with col_p1:
                     mental_health_impact = st.text_area("Impact of Group Involvement on Mental/Emotional Well-being:", value=str(c_data.get("mental_health_impact", "")))
+                    psychological_challenges = st.text_area("Experience ongoing psychological challenges (restlessness, loss of interest, intrusive thoughts):", value=str(c_data.get("psychological_challenges", "")))
                     psychological_mgmt = st.text_area("How Psychological Challenges Are Managed:", value=str(c_data.get("psychological_mgmt", "")))
-                    family_rel_change = st.text_area("Relationship Changes with Family & Community:", value=str(c_data.get("family_rel_change", "")))
+                    family_rel_change = st.text_area("Relationship Changes with Family & Community Since Leaving Group:", value=str(c_data.get("family_rel_change", "")))
                     support_system = st.text_area("Current Support System Details:", value=str(c_data.get("support_system", "")))
                     feeling_safety = st.selectbox("Feel Safe in Residence / Community?", ["Yes", "No", "Uncertain"])
-                    uniformed_personnel_feeling = st.text_area("Reaction / Feeling When Seeing Uniformed Personnel:", value=str(c_data.get("uniformed_personnel_feeling", "")))
                 with col_p2:
+                    uniformed_personnel_feeling = st.text_area("Reaction / Feeling When Seeing Uniformed Personnel:", value=str(c_data.get("uniformed_personnel_feeling", "")))
                     threats_perceived = st.text_area("Perceived Threats in Community:", value=str(c_data.get("threats_perceived", "")))
                     current_time_spent = st.text_area("How Current Time is Spent:", value=str(c_data.get("current_time_spent", "")))
                     hopes_aspirations = st.text_area("Hopes and Aspirations for the Future:", value=str(c_data.get("hopes_aspirations", "")))
-                    transformation_challenges = st.text_area("Challenges Faced in Transformation Process:", value=str(c_data.get("transformation_challenges", "")))
-                    coping_mechanisms = st.text_area("Coping Mechanisms for Stress & Difficulties:", value=str(c_data.get("coping_mechanisms", "")))
-                    personal_growth = st.text_area("Personal Growth / Changes Proud Of:", value=str(c_data.get("personal_growth", "")))
+                    peace_effort_changes = st.text_area("Changes in Outlook Since Peace Efforts with Government:", value=str(c_data.get("peace_effort_changes", "")))
+                    personal_growth_pride = st.text_area("Personal Growth / Changes Most Proud Of:", value=str(c_data.get("personal_growth_pride", "")))
 
                 st.divider()
                 st.markdown("##### 🏛️ Political & Security Landscape")
                 col_p3, col_p4 = st.columns(2)
                 with col_p3:
                     barangay_council_member = st.selectbox("Member of Barangay Council?", ["Yes", "No"])
-                    pending_legal_cases = st.text_input("Awareness of Pending Legal/Criminal Cases:", value=str(c_data.get("pending_legal_cases", "")))
+                    pending_legal_cases = st.text_input("Awareness of Existing/Pending Legal/Criminal Cases:", value=str(c_data.get("pending_legal_cases", "")))
                 with col_p4:
-                    arrest_history = st.text_input("Apprehension/Arrest History:", value=str(c_data.get("arrest_history", "")))
+                    arrest_history = st.text_input("Arrested/Apprehended for Non-Group Matters?", value=str(c_data.get("arrest_history", "")))
                     message_to_govt = st.text_area("Message / Expression to the Government:", value=str(c_data.get("message_to_govt", "")))
 
             elif menu_selection == "🎓 8. Capacity Building":
-                st.markdown("##### 🎓 Capacity Building & Skills Training Wants (Annex A5)")
+                st.markdown("##### 🎓 Capacity Building & Skills Training (Annex A5)")
                 col_cb1, col_cb2 = st.columns(2)
                 with col_cb1:
                     existing_skills = st.text_input("Existing Skills Possessed:", value=str(c_data.get("existing_skills", "")))
@@ -898,18 +961,28 @@ elif menu_selection in [
                     skills_training_wish = st.selectbox("Wish to Undergo Skills Training?", ["Yes", "No"])
                     skills_training_pref = st.selectbox("Preferred Training Environment:", ["Community-based", "Center-based"])
                 with col_cb2:
-                    formal_education_wish = st.selectbox("Wish to Enroll in Formal Education?", ["Yes", "No", "Not Applicable"])
-                    als_enrollment_wish = st.selectbox("Willing to Enroll in ALS?", ["Yes", "No", "Not Applicable"])
-                    education_docs_available = st.text_input("Requirements Available:", value=str(c_data.get("education_docs_available", "")))
+                    formal_education_wish = st.selectbox("Wish to Enroll in Formal Education?", ["YES", "NO", "NOT APPLICABLE"])
+                    als_enrollment_wish = st.selectbox("Willing to Enroll in Alternative Learning System (ALS)?", ["YES", "NO", "NOT APPLICABLE"])
+                    education_docs_available = st.multiselect("Education Requirements Available:", ["NSO/PSA Authenticated Birth Certificate", "Form 137 (Last school attended)", "Certificate of earned units (College)", "Certificate of Accreditation & Equivalency (ALS)", "Valid ID", "None"])
 
                 st.divider()
+                st.markdown("##### 🛠️ TESDA & Skills Training Course Preferences")
+                skills_courses_desired = st.multiselect(
+                    "Select Skills Training Courses Desired to Enroll:",
+                    [
+                        "Agri Financing", "Baking and Pastry", "Beautician", "Carpentry", "Cookery", "Dressmaking", "Driving", 
+                        "Electrical Installation and Maintenance", "Entrepreneurship", "Food Packaging", "Food Processing", 
+                        "Housekeeping", "Massage", "Masonry", "Organic agriculture production", "Photo voltaic system installation (Solar Electricity)", 
+                        "Plumbing", "Small Engine mechanics", "Security Service", "Tailoring", "Welding", "Others"
+                    ]
+                )
+                
                 col_cb3, col_cb4 = st.columns(2)
                 with col_cb3:
-                    dependents_education_wish = st.text_input("Dependents to Enroll in Formal Ed or ALS:", value=str(c_data.get("dependents_education_wish", "")))
-                    study_grant_dependents = st.text_input("Dependents to Avail Study Grant / Scholarship:", value=str(c_data.get("study_grant_dependents", "")))
+                    dependents_education_wish = st.text_input("Dependents to Enroll in Formal Ed / ALS:", value=str(c_data.get("dependents_education_wish", "")))
+                    study_grant_dependents = st.text_input("Dependents to Avail Study Grant Program:", value=str(c_data.get("study_grant_dependents", "")))
                 with col_cb4:
-                    skills_training_desired_list = st.text_area("Desired Skills Training Courses:", value=str(c_data.get("skills_training_desired_list", "")))
-                    skills_training_dependents = st.text_input("Dependents to Avail Skills Training:", value=str(c_data.get("skills_training_dependents", "")))
+                    skills_training_dependents = st.text_input("Dependents to Avail Skills Training Program:", value=str(c_data.get("skills_training_dependents", "")))
 
             elif menu_selection == "📝 9. Assessment & Updates":
                 st.markdown("##### 📝 Case Worker Evaluative Assessment & Progress Notes (Part VI)")
@@ -933,20 +1006,35 @@ elif menu_selection in [
                             with engine.begin() as conn:
                                 conn.execute(text("UPDATE cases SET prob_desc=:pd, assist_requested=:ar WHERE id=:id"), {"pd": prob_desc, "ar": assist_requested, "id": case_id})
                         elif menu_selection == "🏠 4. Infrastructure & Housing":
+                            gar_str = ", ".join(govt_assistance_received)
+                            gau_str = ", ".join(govt_assistance_usage)
                             with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET house_ownership=:ho, housing_condition=:hc, house_renovate_pref=:hrp, roofing_material=:rm, walling_material=:wm, flooring_material=:fm, water_source=:ws, sanitation_toilet=:st, illness_6months=:i6, illness_duration=:id, illness_severity=:isev, govt_assistance_received=:gar, govt_assistance_usage=:gau, govt_assistance_impact=:gai WHERE id=:case_id"), {"ho": house_ownership, "hc": housing_condition, "hrp": house_renovate_pref, "rm": roofing_material, "wm": walling_material, "fm": flooring_material, "ws": water_source, "st": sanitation_toilet, "i6": illness_6months, "id": illness_duration, "isev": illness_severity, "gar": govt_assistance_received, "gau": govt_assistance_usage, "gai": govt_assistance_impact, "case_id": case_id})
+                                conn.execute(text("UPDATE cases SET house_ownership=:ho, housing_condition=:hc, house_renovate_pref=:hrp, roofing_material=:rm, walling_material=:wm, flooring_material=:fm, water_source=:ws, sanitation_toilet=:st, illness_6months=:i6, illness_duration=:id, illness_severity=:isev, govt_assistance_received=:gar, govt_assistance_usage=:gau, govt_assistance_impact=:gai WHERE id=:case_id"), {"ho": house_ownership, "hc": housing_condition, "hrp": house_renovate_pref, "rm": roofing_material, "wm": walling_material, "fm": flooring_material, "ws": water_source, "st": sanitation_toilet, "i6": illness_6months, "id": illness_duration, "isev": illness_severity, "gar": gar_str, "gau": gau_str, "gai": govt_assistance_impact, "case_id": case_id})
                         elif menu_selection == "🌾 5. Agricultural Info":
+                            cs_str = ", ".join(crops_specify)
+                            ls_str = ", ".join(livestock_specify)
+                            fs_str = ", ".join(fisheries_specify)
+                            sss_str = ", ".join(support_services_specify)
+                            fan_str = ", ".join(farming_assistance_needed)
+                            fin_str = ", ".join(farming_infra_needed)
+                            fsd_str = ", ".join(farming_skills_desired)
                             with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET land_ownership=:lo, land_ownership_type=:lot, land_location=:ll, land_area=:la, agri_equipment=:ae, agri_cultivation_involvement=:aci, crops_specify=:cs, livestock_specify=:ls, fisheries_specify=:fs, support_services_specify=:sss, farming_interest=:fi, farming_assistance_needed=:fan, farming_infra_needed=:fin, farming_skills_desired=:fsd WHERE id=:case_id"), {"lo": land_ownership, "lot": land_ownership_type, "ll": land_location, "la": land_area, "ae": agri_equipment, "aci": agri_cultivation_involvement, "cs": crops_specify, "ls": livestock_specify, "fs": fisheries_specify, "sss": support_services_specify, "fi": farming_interest, "fan": farming_assistance_needed, "fin": farming_infra_needed, "fsd": farming_skills_desired, "case_id": case_id})
+                                conn.execute(text("UPDATE cases SET land_ownership=:lo, land_ownership_type=:lot, land_location=:ll, land_area=:la, agri_equipment=:ae, agri_cultivation_involvement=:aci, crops_specify=:cs, livestock_specify=:ls, fisheries_specify=:fs, support_services_specify=:sss, farming_interest=:fi, farming_assistance_needed=:fan, farming_infra_needed=:fin, farming_skills_desired=:fsd WHERE id=:case_id"), {"lo": land_ownership, "lot": land_ownership_type, "ll": land_location, "la": land_area, "ae": agri_equipment, "aci": agri_cultivation_involvement, "cs": cs_str, "ls": ls_str, "fs": fs_str, "sss": sss_str, "fi": farming_interest, "fan": fan_str, "fin": fin_str, "fsd": fsd_str, "case_id": case_id})
                         elif menu_selection == "💼 6. Livelihood & Employment":
+                            veh_summary = f"Boat: {v_boat}, Tricycle: {v_tricycle}, Jeepney: {v_jeepney}, Van: {v_van}, Motorcycle: {v_motorcycle}, Others: {v_others}"
+                            bo_str = ", ".join(business_opportunities)
+                            uni_str = ", ".join(uniformed_interest)
+                            cfw_str = ", ".join(cfw_preferred_tasks)
                             with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET vehicles_owned=:vo, occupation_status=:os, occupation_specify=:ospec, desired_future_occ=:dfo, coop_membership=:cm, coop_name=:cn, coop_position=:cp, coop_duration=:cd, business_type=:bt, business_duration=:bd, business_goal=:bg, business_assets_owned=:bao, uniformed_service_interest=:usi, cfw_interest=:cfwi, cfw_preferred_work=:cfwpw WHERE id=:case_id"), {"vo": vehicles_owned, "os": occupation_status, "ospec": occupation_specify, "dfo": desired_future_occ, "cm": coop_membership, "cn": coop_name, "cp": coop_position, "cd": coop_duration, "bt": business_type, "bd": business_duration, "bg": business_goal, "bao": business_assets_owned, "usi": uniformed_service_interest, "cfwi": cfw_interest, "cfwpw": cfw_preferred_work, "case_id": case_id})
+                                conn.execute(text("UPDATE cases SET vehicles_owned=:vo, occupation_status=:os, occupation_specify=:ospec, desired_future_occ=:dfo, coop_membership=:cm, coop_name=:cn, business_type=:bt, business_duration=:bd, business_goal=:bg, business_assets_owned=:bao, uniformed_service_interest=:usi, cfw_interest=:cfwi, cfw_preferred_work=:cfwpw WHERE id=:case_id"), {"vo": veh_summary, "os": occupation_status, "ospec": occupation_specify, "dfo": desired_future_occ, "cm": coop_membership, "cn": coop_name, "bt": business_type, "bd": business_duration, "bg": business_goal, "bao": bo_str, "usi": uni_str, "cfwi": cfw_interest, "cfwpw": cfw_str, "case_id": case_id})
                         elif menu_selection == "🧠 7. Psychosocial Support":
                             with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET mental_health_impact=:mhi, psychological_mgmt=:pm, family_rel_change=:frc, support_system=:ss, feeling_safety=:fs, uniformed_personnel_feeling=:upf, threats_perceived=:tp, current_time_spent=:cts, hopes_aspirations=:ha, transformation_challenges=:tc, coping_mechanisms=:cm, personal_growth=:pg, barangay_council_member=:bcm, pending_legal_cases=:plc, arrest_history=:ah, message_to_govt=:mtg WHERE id=:case_id"), {"mhi": mental_health_impact, "pm": psychological_mgmt, "frc": family_rel_change, "ss": support_system, "fs": feeling_safety, "upf": uniformed_personnel_feeling, "tp": threats_perceived, "cts": current_time_spent, "ha": hopes_aspirations, "tc": transformation_challenges, "cm": coping_mechanisms, "pg": personal_growth, "bcm": barangay_council_member, "plc": pending_legal_cases, "ah": arrest_history, "mtg": message_to_govt, "case_id": case_id})
+                                conn.execute(text("UPDATE cases SET mental_health_impact=:mhi, psychological_mgmt=:pm, family_rel_change=:frc, support_system=:ss, feeling_safety=:fs, uniformed_personnel_feeling=:upf, threats_perceived=:tp, current_time_spent=:cts, hopes_aspirations=:ha, barangay_council_member=:bcm, pending_legal_cases=:plc, arrest_history=:ah, message_to_govt=:mtg WHERE id=:case_id"), {"mhi": mental_health_impact, "pm": psychological_mgmt, "frc": family_rel_change, "ss": support_system, "fs": feeling_safety, "upf": uniformed_personnel_feeling, "tp": threats_perceived, "cts": current_time_spent, "ha": hopes_aspirations, "bcm": barangay_council_member, "plc": pending_legal_cases, "ah": arrest_history, "mtg": message_to_govt, "case_id": case_id})
                         elif menu_selection == "🎓 8. Capacity Building":
+                            sc_str = ", ".join(skills_courses_desired)
+                            ed_str = ", ".join(education_docs_available)
                             with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET existing_skills=:es, skills_acquisition_mode=:sam, skills_training_wish=:stw, skills_training_pref=:stp, formal_education_wish=:few, als_enrollment_wish=:aew, education_docs_available=:eda, dependents_education_wish=:dew, study_grant_dependents=:sgd, skills_training_desired_list=:stdl, skills_training_dependents=:std WHERE id=:case_id"), {"es": existing_skills, "sam": skills_acquisition_mode, "stw": skills_training_wish, "stp": skills_training_pref, "few": formal_education_wish, "aew": als_enrollment_wish, "eda": education_docs_available, "dew": dependents_education_wish, "sgd": study_grant_dependents, "stdl": skills_training_desired_list, "std": skills_training_dependents, "case_id": case_id})
+                                conn.execute(text("UPDATE cases SET existing_skills=:es, skills_acquisition_mode=:sam, skills_training_wish=:stw, skills_training_pref=:stp, formal_education_wish=:few, als_enrollment_wish=:aew, education_docs_available=:eda, dependents_education_wish=:dew, study_grant_dependents=:sgd, skills_training_desired_list=:stdl, skills_training_dependents=:std WHERE id=:case_id"), {"es": existing_skills, "sam": skills_acquisition_mode, "stw": skills_training_wish, "stp": skills_training_pref, "few": formal_education_wish, "aew": als_enrollment_wish, "eda": ed_str, "dew": dependents_education_wish, "sgd": study_grant_dependents, "stdl": sc_str, "std": skills_training_dependents, "case_id": case_id})
                         elif menu_selection == "📝 9. Assessment & Updates":
                             with engine.begin() as conn:
                                 conn.execute(text("UPDATE cases SET sw_assessment=:sa, place_of_interview=:poi, interviewed_by=:ib, approved_by=:ab WHERE id=:case_id"), {"sa": sw_assessment, "poi": place_of_interview, "ib": user_email, "ab": approved_by, "case_id": case_id})
@@ -997,7 +1085,6 @@ elif menu_selection == "📊 Masterlist Database":
         if not df_my_entries.empty:
             st.success(f"📊 Total Personal Authorized Records: **{len(df_my_entries)} Beneficiaries**")
             
-            # Quick Status Filter
             st_filter = st.selectbox("🔍 Filter Display by Encoding Completion Status:", ["ALL", "Completed", "Incomplete / Draft"])
             df_display = df_my_entries.copy()
             if st_filter != "ALL" and 'profile_status' in df_display.columns:
