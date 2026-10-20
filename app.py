@@ -136,12 +136,15 @@ if hasattr(st, "dialog"):
         privacy_modal()
 
 # ==========================================
-# 2. EMAIL SENDER HELPER
+# 2. EMAIL SENDER HELPER (SECURED VIA st.secrets)
 # ==========================================
 def send_credentials_email(recipient_email, recipient_name, temp_password, user_role="User"):
-    sender_email = "lbidulsa.fo10@dswd.gov.ph"
-    sender_password = "rkgqurmorpvfgktq"
+    sender_email = st.secrets.get("EMAIL_SENDER", "lbidulsa.fo10@dswd.gov.ph")
+    sender_password = st.secrets.get("EMAIL_PASSWORD", "")
     
+    if not sender_password:
+        return False, "EMAIL_PASSWORD secrets key is missing or blank in Streamlit Cloud."
+
     try:
         msg = MIMEMultipart('alternative')
         msg['From'] = f"DSWD FO X PDBBM SCMS Portal <{sender_email}>"
@@ -185,16 +188,13 @@ def send_credentials_email(recipient_email, recipient_name, temp_password, user_
         return False, str(e)
 
 # ==========================================
-# 3. DATABASE CONNECTION ENGINE (SUPABASE POSTGRESQL)
+# 3. DATABASE CONNECTION ENGINE (SUPABASE POSTGRESQL SECURED VIA st.secrets)
 # ==========================================
-DEFAULT_DB_URL = "postgresql+psycopg2://postgres.oxyvjstdncnnefbkilaa:5GLJZg5tWE28Wud9@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres"
-
 @st.cache_resource
 def get_db_engine():
-    try:
-        db_url = st.secrets.get("SUPABASE_URL", DEFAULT_DB_URL)
-    except Exception:
-        db_url = DEFAULT_DB_URL
+    db_url = st.secrets.get("SUPABASE_URL", "")
+    if not db_url:
+        st.error("⚠️ SUPABASE_URL key missing in Streamlit Cloud Secrets!")
     return create_engine(db_url, pool_pre_ping=True)
 
 engine = get_db_engine()
