@@ -257,6 +257,9 @@ def parse_date_str(date_str, default_date=date(1995, 1, 1)):
 DIALECTS_LIST_1 = ["English", "Tagalog", "Bikol", "Cebuano", "Hiligaynon", "Ilokano", "Kagan", "Pampango", "Iranun"]
 DIALECTS_LIST_2 = ["Pangasinense", "Waray", "Chavacano", "Maranao", "Mindanaoan", "Tausūg", "Yakan"]
 
+# EXCLUDED CDPD ACCOUNTS LIST FOR USER MANAGEMENT
+EXCLUDED_CDPD_EMAILS = ("llgatabon.fo10@dswd.gov.ph", "djlwaniwan.fo10@dswd.gov.ph", "stepcelo@gmail.com")
+
 # ==========================================
 # 4. LOGIN PORTAL
 # ==========================================
@@ -1464,8 +1467,8 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
         st.markdown("##### 🔑 Reset User Password (with Live Search)")
         user_search_term = st.text_input("🔍 Search User Name or Email:")
         
-        query_u = "SELECT id, first_name, last_name, email, user_role FROM user_accounts WHERE user_role IN ('User', 'Team Leader', 'Admin')"
-        params_u = {}
+        query_u = "SELECT id, first_name, last_name, email, user_role FROM user_accounts WHERE user_role IN ('User', 'Team Leader', 'Admin') AND lower(email) NOT IN :ex_emails"
+        params_u = {"ex_emails": EXCLUDED_CDPD_EMAILS}
         if user_search_term:
             query_u += " AND (lower(first_name) LIKE lower(:s) OR lower(last_name) LIKE lower(:s) OR lower(email) LIKE lower(:s))"
             params_u["s"] = f"%{user_search_term.strip()}%"
@@ -1506,7 +1509,11 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
 
     st.divider()
     try:
-        df_users = pd.read_sql_query(text("SELECT id, first_name || ' ' || last_name AS Name, email AS Email, user_role AS Role, province AS Province FROM user_accounts WHERE user_role IN ('Superuser', 'Admin', 'Team Leader', 'User')"), engine)
+        df_users = pd.read_sql_query(
+            text("SELECT id, first_name || ' ' || last_name AS Name, email AS Email, user_role AS Role, province AS Province FROM user_accounts WHERE user_role IN ('Superuser', 'Admin', 'Team Leader', 'User') AND lower(email) NOT IN :ex_emails"),
+            engine,
+            params={"ex_emails": EXCLUDED_CDPD_EMAILS}
+        )
         st.dataframe(df_users, use_container_width=True, hide_index=True)
     except Exception:
         pass
