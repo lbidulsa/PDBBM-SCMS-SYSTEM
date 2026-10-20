@@ -188,13 +188,18 @@ def send_credentials_email(recipient_email, recipient_name, temp_password, user_
         return False, str(e)
 
 # ==========================================
-# 3. DATABASE CONNECTION ENGINE (SUPABASE POSTGRESQL SECURED VIA st.secrets)
+# 3. DATABASE CONNECTION ENGINE (WITH FALLBACK DB URL)
 # ==========================================
+DEFAULT_DB_URL = "postgresql+psycopg2://postgres.oxyvjstdncnnefbkilaa:5GLJZg5tWE28Wud9@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres"
+
 @st.cache_resource
 def get_db_engine():
-    db_url = st.secrets.get("SUPABASE_URL", "")
-    if not db_url:
-        st.error("⚠️ SUPABASE_URL key missing in Streamlit Cloud Secrets!")
+    try:
+        db_url = st.secrets.get("SUPABASE_URL", DEFAULT_DB_URL)
+        if not db_url:
+            db_url = DEFAULT_DB_URL
+    except Exception:
+        db_url = DEFAULT_DB_URL
     return create_engine(db_url, pool_pre_ping=True)
 
 engine = get_db_engine()
@@ -1459,7 +1464,7 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
         st.markdown("##### 🔑 Reset User Password (with Live Search)")
         user_search_term = st.text_input("🔍 Search User Name or Email:")
         
-        query_u = "SELECT id, first_name, last_name, email, user_role FROM user_accounts WHERE user_role != 'Superuser'"
+        query_u = "SELECT id, first_name, last_name, email, user_role FROM user_accounts WHERE user_role IN ('User', 'Team Leader', 'Admin')"
         params_u = {}
         if user_search_term:
             query_u += " AND (lower(first_name) LIKE lower(:s) OR lower(last_name) LIKE lower(:s) OR lower(email) LIKE lower(:s))"
@@ -1501,7 +1506,7 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
 
     st.divider()
     try:
-        df_users = pd.read_sql_query(text("SELECT id, first_name || ' ' || last_name AS Name, email AS Email, user_role AS Role, province AS Province FROM user_accounts"), engine)
+        df_users = pd.read_sql_query(text("SELECT id, first_name || ' ' || last_name AS Name, email AS Email, user_role AS Role, province AS Province FROM user_accounts WHERE user_role IN ('Superuser', 'Admin', 'Team Leader', 'User')"), engine)
         st.dataframe(df_users, use_container_width=True, hide_index=True)
     except Exception:
         pass
