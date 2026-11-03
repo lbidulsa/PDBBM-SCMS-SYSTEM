@@ -230,6 +230,27 @@ def get_db_engine():
 
 engine = get_db_engine()
 
+# Auto-sync and ensure database tables exist
+try:
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS deleted_cases_archive (
+                archive_id SERIAL PRIMARY KEY,
+                original_case_id INT,
+                control_no VARCHAR(255),
+                client_name VARCHAR(255),
+                requested_by VARCHAR(255),
+                deletion_reason TEXT,
+                deleted_by VARCHAR(255),
+                archived_at VARCHAR(255),
+                raw_case_data_json TEXT
+            );
+        """))
+        conn.execute(text("UPDATE deletion_requests SET status = 'APPROVED' WHERE status = 'PENDING' AND case_id NOT IN (SELECT id FROM cases)"))
+except Exception:
+    pass
+
+
 def generate_random_password(length=10):
     chars = string.ascii_letters + string.digits + "!@#$%&*"
     return ''.join(secrets.choice(chars) for _ in range(length))
@@ -447,6 +468,8 @@ with st.sidebar:
     if user_role in ["Superuser", "Admin"]:
         try:
             with engine.connect() as conn:
+                # Auto-clean orphaned deletion requests whose cases were already deleted directly
+                conn.execute(text("UPDATE deletion_requests SET status = 'APPROVED' WHERE status = 'PENDING' AND case_id NOT IN (SELECT id FROM cases)"))
                 pending_del_cnt = conn.execute(text("SELECT COUNT(*) FROM deletion_requests WHERE status = 'PENDING'")).fetchone()[0]
             if pending_del_cnt > 0:
                 if st.button(f"🔔 Deletion Requests: {pending_del_cnt} Pending (Click to View)", use_container_width=True):
@@ -456,10 +479,17 @@ with st.sidebar:
         except Exception:
             pass
 
-    if st.button("🚪 Logout", use_container_width=True):
-        st.session_state["authenticated"] = False
-        st.session_state["user_info"] = {}
-        st.rerun()
+    col_side_btn1, col_side_btn2 = st.columns(2)
+    with col_side_btn1:
+        if st.button("🔄 Refresh Data", use_container_width=True):
+            st.cache_data.clear()
+            st.toast("🔄 System data refreshed successfully!", icon="✨")
+            st.rerun()
+    with col_side_btn2:
+        if st.button("🚪 Logout", use_container_width=True):
+            st.session_state["authenticated"] = False
+            st.session_state["user_info"] = {}
+            st.rerun()
 
     with st.expander("🔑 Change My Password"):
         with st.form("self_change_pass_scms"):
@@ -1248,6 +1278,20 @@ elif menu_selection == "📊 Masterlist Database":
                                     raw_json = df_raw.to_json(orient="records") if not df_raw.empty else "{}"
                                     
                                     with engine.begin() as conn:
+                                        # Ensure table exists in Supabase if not yet created
+                                        conn.execute(text("""
+                                            CREATE TABLE IF NOT EXISTS deleted_cases_archive (
+                                                archive_id SERIAL PRIMARY KEY,
+                                                original_case_id INT,
+                                                control_no VARCHAR(255),
+                                                client_name VARCHAR(255),
+                                                requested_by VARCHAR(255),
+                                                deletion_reason TEXT,
+                                                deleted_by VARCHAR(255),
+                                                archived_at VARCHAR(255),
+                                                raw_case_data_json TEXT
+                                            );
+                                        """))
                                         conn.execute(
                                             text("""
                                                 INSERT INTO deleted_cases_archive (original_case_id, control_no, client_name, requested_by, deletion_reason, deleted_by, archived_at, raw_case_data_json)
@@ -1258,6 +1302,7 @@ elif menu_selection == "📊 Masterlist Database":
                                         conn.execute(text("DELETE FROM cases WHERE id = :id"), {"id": req_case_id})
                                         conn.execute(text("DELETE FROM family_members WHERE case_id = :id"), {"id": req_case_id})
                                         conn.execute(text("DELETE FROM deceased_family_members WHERE case_id = :id"), {"id": req_case_id})
+                                        conn.execute(text("UPDATE deletion_requests SET status = 'APPROVED' WHERE case_id = :id"), {"id": req_case_id})
                                     
                                     st.toast("⚡ Record deleted & auto-backed up to Archive!", icon="📦")
                                     st.success(f"✅ Success! Case #{req_case_id} ({req_cname}) has been permanently deleted and safely backed up to 'Deleted Cases Archive'.")
