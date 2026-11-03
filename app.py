@@ -449,7 +449,10 @@ with st.sidebar:
             with engine.connect() as conn:
                 pending_del_cnt = conn.execute(text("SELECT COUNT(*) FROM deletion_requests WHERE status = 'PENDING'")).fetchone()[0]
             if pending_del_cnt > 0:
-                st.error(f"🔔 **Deletion Requests:** {pending_del_cnt} Pending")
+                if st.button(f"🔔 Deletion Requests: {pending_del_cnt} Pending (Click to View)", use_container_width=True):
+                    st.session_state["redirect_to_module"] = "📊 Masterlist Database"
+                    st.session_state["target_tab_idx"] = 4
+                    st.rerun()
         except Exception:
             pass
 
@@ -1178,6 +1181,13 @@ elif menu_selection == "📊 Masterlist Database":
     if user_role in ["Superuser", "Admin"]:
         tabs_list.append("🗑️ Pending Delete Approvals")
         tabs_list.append("📦 Deleted Cases Archive")
+
+    # Handle automatic tab focus from notification link click
+    if "target_tab_idx" in st.session_state and st.session_state["target_tab_idx"] is not None:
+        # Note: In Streamlit, default active tab can be visually guided or focused
+        # We also show a high priority alert banner at top of Masterlist Database
+        st.warning("🔔 **ACTION REQUIRED:** You have pending deletion requests below. Palihug tan-awa sa **🗑️ Pending Delete Approvals** tab.")
+        st.session_state["target_tab_idx"] = None
 
     tabs = st.tabs(tabs_list)
 
