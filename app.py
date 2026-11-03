@@ -178,11 +178,20 @@ def send_credentials_email(recipient_email, recipient_name, temp_password, user_
         """
         msg.attach(MIMEText(html_body, 'html'))
         
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(sender_email, sender_password)
-        server.send_message(msg)
-        server.quit()
+        smtp_server = st.secrets.get("SMTP_SERVER", "smtp.gmail.com")
+        smtp_port = int(st.secrets.get("SMTP_PORT", 465))
+        
+        if smtp_port == 465:
+            server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=15)
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+            server.quit()
+        else:
+            server = smtplib.SMTP(smtp_server, smtp_port, timeout=15)
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+            server.quit()
         return True, "Email sent successfully!"
     except Exception as e:
         return False, str(e)
@@ -1467,8 +1476,9 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
         st.markdown("##### 🔑 Reset User Password (with Live Search)")
         user_search_term = st.text_input("🔍 Search User Name or Email:")
         
-        query_u = "SELECT id, first_name, last_name, email, user_role FROM user_accounts WHERE user_role IN ('User', 'Team Leader', 'Admin') AND lower(email) NOT IN :ex_emails"
-        params_u = {"ex_emails": EXCLUDED_CDPD_EMAILS}
+        ex_emails_list = tuple(e.lower() for e in EXCLUDED_CDPD_EMAILS)
+        query_u = "SELECT id, first_name, last_name, email, user_role FROM user_accounts WHERE user_role IN ('User', 'Team Leader', 'Admin', 'Superuser') AND lower(email) NOT IN :ex_emails"
+        params_u = {"ex_emails": ex_emails_list}
         if user_search_term:
             query_u += " AND (lower(first_name) LIKE lower(:s) OR lower(last_name) LIKE lower(:s) OR lower(email) LIKE lower(:s))"
             params_u["s"] = f"%{user_search_term.strip()}%"
@@ -1512,7 +1522,7 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
         df_users = pd.read_sql_query(
             text("SELECT id, first_name || ' ' || last_name AS Name, email AS Email, user_role AS Role, province AS Province FROM user_accounts WHERE user_role IN ('Superuser', 'Admin', 'Team Leader', 'User') AND lower(email) NOT IN :ex_emails"),
             engine,
-            params={"ex_emails": EXCLUDED_CDPD_EMAILS}
+            params={"ex_emails": tuple(e.lower() for e in EXCLUDED_CDPD_EMAILS)}
         )
         st.dataframe(df_users, use_container_width=True, hide_index=True)
     except Exception:
