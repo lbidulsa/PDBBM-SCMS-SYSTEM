@@ -1219,30 +1219,56 @@ elif menu_selection == "📊 Masterlist Database":
                 )
             
             with col_d2:
-                with st.expander("🗑️ Request to Delete an Entry"):
+                exp_label = "🗑️ Direct Delete & Archive Entry" if user_role in ["Superuser", "Admin"] else "🗑️ Request to Delete an Entry"
+                with st.expander(exp_label):
                     del_options = {f"ID #{row['id']} - [HHID: {row['control_no'] or 'N/A'}]: {row['first_name']} {row['last_name']}": (row['id'], row['control_no'], f"{row['first_name']} {row['last_name']}") for _, row in df_my_entries.iterrows()}
-                    selected_del = st.selectbox("Select Record to Request Deletion:", list(del_options.keys()))
-                    del_reason = st.text_area("State Reason for Deletion Request*:", placeholder="e.g. Duplicate entry / Incorrect client details")
+                    selected_del = st.selectbox("Select Record to Process Deletion:", list(del_options.keys()))
+                    del_reason = st.text_area("State Reason for Deletion*:", placeholder="e.g. Duplicate entry / Incorrect client details")
                     
-                    if st.button("📩 Submit Deletion Request to Admin", use_container_width=True):
+                    btn_label = "⚡ Direct Delete & Auto-Archive Now" if user_role in ["Superuser", "Admin"] else "📩 Submit Deletion Request to Admin"
+                    
+                    if st.button(btn_label, use_container_width=True):
                         if del_reason.strip():
                             req_case_id, req_hhid, req_cname = del_options[selected_del]
                             req_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             try:
-                                with engine.begin() as conn:
-                                    conn.execute(
-                                        text("""
-                                            INSERT INTO deletion_requests (case_id, control_no, client_name, requested_by, reason, request_date, status)
-                                            VALUES (:cid, :hhid, :cn, :rb, :r, :rd, 'PENDING')
-                                        """),
-                                        {"cid": req_case_id, "hhid": req_hhid, "cn": req_cname, "rb": user_email, "r": del_reason.strip(), "rd": req_date}
-                                    )
-                                st.toast("📩 Deletion request submitted to Admin!", icon="📩")
-                                st.success(f"📩 Deletion request for ID #{req_case_id} submitted to Super Admin for approval!")
+                                if user_role in ["Superuser", "Admin"]:
+                                    # DIRECT DELETE & AUTOMATIC ARCHIVE FOR SUPERUSER/ADMIN
+                                    df_raw = pd.read_sql_query(text("SELECT * FROM cases WHERE id = :id"), engine, params={"id": req_case_id})
+                                    raw_json = df_raw.to_json(orient="records") if not df_raw.empty else "{}"
+                                    
+                                    with engine.begin() as conn:
+                                        conn.execute(
+                                            text("""
+                                                INSERT INTO deleted_cases_archive (original_case_id, control_no, client_name, requested_by, deletion_reason, deleted_by, archived_at, raw_case_data_json)
+                                                VALUES (:ocid, :cno, :cn, :rb, :dr, :db, :aat, :json)
+                                            """),
+                                            {"ocid": req_case_id, "cno": req_hhid, "cn": req_cname, "rb": user_email, "dr": del_reason.strip(), "db": user_email, "aat": req_date, "json": raw_json}
+                                        )
+                                        conn.execute(text("DELETE FROM cases WHERE id = :id"), {"id": req_case_id})
+                                        conn.execute(text("DELETE FROM family_members WHERE case_id = :id"), {"id": req_case_id})
+                                        conn.execute(text("DELETE FROM deceased_family_members WHERE case_id = :id"), {"id": req_case_id})
+                                    
+                                    st.toast("⚡ Record deleted & auto-backed up to Archive!", icon="📦")
+                                    st.success(f"✅ Success! Case #{req_case_id} ({req_cname}) has been permanently deleted and safely backed up to 'Deleted Cases Archive'.")
+                                    st.rerun()
+                                else:
+                                    # REGULAR USER SUBMIT REQUEST TO SUPERADMIN
+                                    with engine.begin() as conn:
+                                        conn.execute(
+                                            text("""
+                                                INSERT INTO deletion_requests (case_id, control_no, client_name, requested_by, reason, request_date, status)
+                                                VALUES (:cid, :hhid, :cn, :rb, :r, :rd, 'PENDING')
+                                            """),
+                                            {"cid": req_case_id, "hhid": req_hhid, "cn": req_cname, "rb": user_email, "r": del_reason.strip(), "rd": req_date}
+                                        )
+                                    st.toast("📩 Deletion request submitted to Admin!", icon="📩")
+                                    st.success(f"📩 Deletion request for ID #{req_case_id} submitted to Super Admin for approval in Tab 5!")
+                                    st.rerun()
                             except Exception as ex:
                                 st.error(f"❌ DATABASE ERROR: {ex}")
                         else:
-                            st.error("⚠️ Please provide a reason for the deletion request.")
+                            st.error("⚠️ Please provide a reason for the deletion.")
         else:
             st.info("No recorded beneficiary entries found under your user account.")
 
