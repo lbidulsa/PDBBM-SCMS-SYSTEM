@@ -1210,6 +1210,8 @@ elif menu_selection == "📊 Masterlist Database":
     
     if user_role in ["Superuser", "Admin"]:
         tabs_list.append("🗑️ Pending Delete Approvals")
+    
+    if user_role == "Superuser":
         tabs_list.append("📦 Deleted Cases Archive")
 
     # Handle automatic tab focus from notification link click
@@ -1420,8 +1422,9 @@ elif menu_selection == "📊 Masterlist Database":
                 use_container_width=True
             )
 
-    if user_role in ["Superuser", "Admin"]:
-        with tabs[4]:
+    if "🗑️ Pending Delete Approvals" in tabs_list:
+        pending_tab_idx = tabs_list.index("🗑️ Pending Delete Approvals")
+        with tabs[pending_tab_idx]:
             st.markdown("### 🗑️ Super Admin Deletion Request Approvals")
             try:
                 df_req = pd.read_sql_query(text("SELECT id, case_id AS 'Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', reason AS 'Reason for Deletion', request_date AS 'Request Date' FROM deletion_requests WHERE status = 'PENDING' ORDER BY id DESC"), engine)
@@ -1476,7 +1479,9 @@ elif menu_selection == "📊 Masterlist Database":
             else:
                 st.info("🎉 No pending deletion requests at this time.")
 
-        with tabs[5]:
+    if "📦 Deleted Cases Archive" in tabs_list and user_role == "Superuser":
+        archive_tab_idx = tabs_list.index("📦 Deleted Cases Archive")
+        with tabs[archive_tab_idx]:
             st.markdown("### 📦 Deleted Cases Recycle Bin & Archive (Auto-Backup)")
             try:
                 df_arch = pd.read_sql_query(text("SELECT archive_id AS 'Archive ID', original_case_id AS 'Original Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', deletion_reason AS 'Reason', deleted_by AS 'Approved By', archived_at AS 'Date Deleted' FROM deleted_cases_archive ORDER BY archive_id DESC"), engine)
