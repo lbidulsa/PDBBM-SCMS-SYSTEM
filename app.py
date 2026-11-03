@@ -179,19 +179,36 @@ def send_credentials_email(recipient_email, recipient_name, temp_password, user_
         msg.attach(MIMEText(html_body, 'html'))
         
         smtp_server = st.secrets.get("SMTP_SERVER", "smtp.gmail.com")
-        smtp_port = int(st.secrets.get("SMTP_PORT", 465))
+        smtp_port = int(st.secrets.get("SMTP_PORT", 587))
         
-        if smtp_port == 465:
-            server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=15)
-            server.login(sender_email, sender_password)
-            server.send_message(msg)
-            server.quit()
+        # Robust fallback attempt (Port 587 STARTTLS vs Port 465 SSL)
+        success = False
+        last_err = ""
+
+        # Attempt 1: Port 587 (TLS - Preferred for Streamlit Cloud egress)
+        try:
+            with smtplib.SMTP(smtp_server, 587, timeout=20) as server:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                server.login(sender_email, sender_password)
+                server.send_message(msg)
+                success = True
+        except Exception as e1:
+            last_err = str(e1)
+            # Attempt 2: Port 465 (Direct SSL Fallback)
+            try:
+                with smtplib.SMTP_SSL(smtp_server, 465, timeout=20) as server:
+                    server.login(sender_email, sender_password)
+                    server.send_message(msg)
+                    success = True
+            except Exception as e2:
+                last_err = f"TLS Error: {e1} | SSL Error: {e2}"
+
+        if success:
+            return True, "Email sent successfully!"
         else:
-            server = smtplib.SMTP(smtp_server, smtp_port, timeout=15)
-            server.starttls()
-            server.login(sender_email, sender_password)
-            server.send_message(msg)
-            server.quit()
+            return False, f"Connection failed: {last_err}" 
         return True, "Email sent successfully!"
     except Exception as e:
         return False, str(e)
