@@ -230,7 +230,7 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# Auto-sync and ensure database tables exist
+# Auto-sync, ensure database tables exist & PURGE ARCHIVE > 30 DAYS
 try:
     with engine.begin() as conn:
         conn.execute(text("""
@@ -245,6 +245,11 @@ try:
                 archived_at VARCHAR(255),
                 raw_case_data_json TEXT
             );
+        """))
+        # Auto-purge records older than 30 days from database
+        conn.execute(text("""
+            DELETE FROM deleted_cases_archive 
+            WHERE TO_TIMESTAMP(archived_at, 'YYYY-MM-DD HH24:MI:SS') < NOW() - INTERVAL '30 days'
         """))
         conn.execute(text("UPDATE deletion_requests SET status = 'APPROVED' WHERE status = 'PENDING' AND case_id NOT IN (SELECT id FROM cases)"))
 except Exception:
@@ -1483,12 +1488,34 @@ elif menu_selection == "📊 Masterlist Database":
         archive_tab_idx = tabs_list.index("📦 Deleted Cases Archive")
         with tabs[archive_tab_idx]:
             st.markdown("### 📦 Deleted Cases Recycle Bin & Archive (Auto-Backup)")
+            st.caption("ℹ️ **Auto-Purge Policy:** All archived records are automatically cleared after 30 days to optimize system database storage.")
             try:
                 df_arch = pd.read_sql_query(text("SELECT archive_id AS 'Archive ID', original_case_id AS 'Original Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', deletion_reason AS 'Reason', deleted_by AS 'Approved By', archived_at AS 'Date Deleted' FROM deleted_cases_archive ORDER BY archive_id DESC"), engine)
             except Exception:
                 df_arch = pd.DataFrame()
             
             if not df_arch.empty:
+                # Calculate Live 30-Day Countdown for each archived item
+                def calc_countdown(arch_date_str):
+                    try:
+                        dt = datetime.strptime(str(arch_date_str).strip(), "%Y-%m-%d %H:%M:%S")
+                        days_passed = (datetime.now() - dt).days
+                        rem = 30 - days_passed
+                        if rem > 5:
+                            return f"⏳ {max(0, rem)} Days Remaining"
+                        elif rem > 0:
+                            return f"⚠️ {rem} Days Left (Expiring Soon)"
+                        else:
+                            return "🚨 Expiring Today (Auto-Purge Pending)"
+                    except Exception:
+                        return "⏳ 30 Days Remaining"
+
+                df_arch['Retention Countdown (30-Day Limit)'] = df_arch['Date Deleted'].apply(calc_countdown)
+                
+                # Reorder columns to display Countdown prominently
+                cols = ['Archive ID', 'Retention Countdown (30-Day Limit)', 'Original Case ID', 'Household ID', 'Client Name', 'Requested By', 'Reason', 'Approved By', 'Date Deleted']
+                df_arch = df_arch[[c for c in cols if c in df_arch.columns]]
+                
                 st.dataframe(df_arch, use_container_width=True)
                 
                 st.divider()
