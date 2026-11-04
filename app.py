@@ -1,31 +1,73 @@
-import streamlit as st
-import pandas as pd
-from sqlalchemy import create_engine, text
-import secrets
-import string
-import os
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from datetime import datetime, date
+import base64
+import datetime
+from datetime import date
+import io
 from io import BytesIO
+import os
+import random
+import secrets
+import smtplib
+import string
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+import pandas as pd
+from PIL import ExifTags, Image
+import plotly.express as px
+from sqlalchemy import create_engine, text
+import streamlit as st
+
+# Timezone Support for Philippine Standard Time (PST - UTC+8)
+try:
+    from zoneinfo import ZoneInfo
+    PH_TZ = ZoneInfo("Asia/Manila")
+except ImportError:
+    import pytz
+    PH_TZ = pytz.timezone("Asia/Manila")
+
+def get_ph_time():
+    """Returns current datetime in Philippine Standard Time (Asia/Manila UTC+8)"""
+    return datetime.datetime.now(PH_TZ)
+
+def format_ph_time(dt_val):
+    """Converts database timestamp into formatted Philippine Standard Time string"""
+    if dt_val is None or pd.isna(dt_val):
+        return "Never Logged In"
+    try:
+        if isinstance(dt_val, str):
+            dt_val = pd.to_datetime(dt_val)
+
+        if dt_val.tzinfo is None:
+            dt_ph = dt_val.replace(tzinfo=datetime.timezone.utc).astimezone(PH_TZ)
+        else:
+            dt_ph = dt_val.astimezone(PH_TZ)
+
+        return dt_ph.strftime("%B %d, %Y - %I:%M %p")
+    except Exception:
+        return str(dt_val)
 
 # ==========================================
 # 1. PAGE CONFIGURATION & STYLING
 # ==========================================
 st.set_page_config(
     page_title="PDBBM SCMS Beneficiary Management System",
-    page_icon="🕊",
+    page_icon="🕊️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # ---------------------------------------------------------
-# CUSTOM GLOW ANIMATIONS & STYLING INJECTION
+# CUSTOM GLOW ANIMATIONS & SECURITY STYLING INJECTION
 # ---------------------------------------------------------
 st.markdown("""
     <style>
     .stApp { background-color: #F8F9FA; color: #0F172A; }
+
+    /* Security Fix: Hide Streamlit Header, GitHub Repository Link Icon, and Main Menu */
+    header[data-testid="stHeader"] { visibility: hidden !important; display: none !important; }
+    #MainMenu { visibility: hidden !important; display: none !important; }
+    footer { visibility: hidden !important; display: none !important; }
+    .stAppDeployButton { display: none !important; }
     
     .dialect-box {
         background-color: #FFFFFF;
@@ -40,9 +82,7 @@ st.markdown("""
         border-color: #0284C7;
     }
 
-    /* ========================================================= */
-    /* 🌟 METRIC CARDS GLOW & HOVER ANIMATION (LOGOUT STYLE) 🌟 */
-    /* ========================================================= */
+    /* METRIC CARDS GLOW & HOVER ANIMATION */
     div[data-testid="stMetric"] {
         background: #FFFFFF !important;
         border: 1px solid #CBD5E1 !important;
@@ -69,9 +109,7 @@ st.markdown("""
         font-size: 24px !important;
     }
 
-    /* ========================================================= */
-    /* 🌟 UNIFIED BUTTON ANIMATIONS & RED/ORANGE GLOW EFFECTS 🌟 */
-    /* ========================================================= */
+    /* UNIFIED BUTTON ANIMATIONS & RED GLOW EFFECTS */
     div.stButton > button, 
     div.stDownloadButton > button,
     div.stFormSubmitButton > button,
@@ -86,7 +124,6 @@ st.markdown("""
         box-shadow: 0 2px 4px rgba(0,0,0,0.05) !important;
     }
     
-    /* HOVER STATE - MOSIGA ANG RED GLOW (RED OUTLINE & TEXT) */
     div.stButton > button:hover, 
     div.stDownloadButton > button:hover,
     div.stFormSubmitButton > button:hover,
@@ -98,13 +135,29 @@ st.markdown("""
         transform: translateY(-2px) scale(1.01) !important;
     }
     
-    /* ACTIVE/CLICK STATE */
     div.stButton > button:active, 
     div.stDownloadButton > button:active,
     div.stFormSubmitButton > button:active,
     .stSidebar div.stButton > button:active {
         transform: translateY(1px) scale(0.99) !important;
         box-shadow: 0 0 5px rgba(225, 29, 72, 0.4) !important;
+    }
+
+    .active-user-card {
+        background: #FFFFFF;
+        border-left: 4px solid #10B981;
+        padding: 12px 16px;
+        border-radius: 8px;
+        margin-bottom: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.03);
+    }
+    .role-badge {
+        background: linear-gradient(135deg, #1F4E78 0%, #2B6CB0 100%);
+        color: white;
+        padding: 3px 10px;
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: 600;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -141,7 +194,8 @@ if hasattr(st, "dialog"):
 def send_credentials_email(recipient_email, recipient_name, temp_password, user_role="User"):
     sender_email = st.secrets.get("EMAIL_SENDER", "lbidulsa.fo10@dswd.gov.ph")
     sender_password = st.secrets.get("EMAIL_PASSWORD", "")
-    
+    system_link = "https://pdbbmscms.streamlit.app/"
+
     if not sender_password:
         return False, "EMAIL_PASSWORD secrets key is missing or blank in Streamlit Cloud."
 
@@ -163,7 +217,7 @@ def send_credentials_email(recipient_email, recipient_name, temp_password, user_
               <div style="background-color: #F4F6F9; padding: 15px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #1F4E78;">
                 <p style="margin: 5px 0;"><b>Login Email:</b> <code style="font-size: 1.1em; color: #1F4E78;">{recipient_email}</code></p>
                 <p style="margin: 5px 0;"><b>Assigned Role:</b> {user_role}</p>
-                <p style="margin: 5px 0;"><b>Temporary Password:</b> <code style="font-size: 1.2em; color: #C53030; font-weight: bold;">{temp_password}</code></p>
+                <p style="margin: 5px 0;"><b>Temporary Password / OTP:</b> <code style="font-size: 1.2em; color: #C53030; font-weight: bold;">{temp_password}</code></p>
               </div>
 
               <p><b>Security Notice:</b> Please login to the PDBBM SCMS Portal and change your temporary password upon first system access.</p>
@@ -179,13 +233,10 @@ def send_credentials_email(recipient_email, recipient_name, temp_password, user_
         msg.attach(MIMEText(html_body, 'html'))
         
         smtp_server = st.secrets.get("SMTP_SERVER", "smtp.gmail.com")
-        smtp_port = int(st.secrets.get("SMTP_PORT", 587))
         
-        # Robust fallback attempt (Port 587 STARTTLS vs Port 465 SSL)
         success = False
         last_err = ""
 
-        # Attempt 1: Port 587 (TLS - Preferred for Streamlit Cloud egress)
         try:
             with smtplib.SMTP(smtp_server, 587, timeout=20) as server:
                 server.ehlo()
@@ -196,7 +247,6 @@ def send_credentials_email(recipient_email, recipient_name, temp_password, user_
                 success = True
         except Exception as e1:
             last_err = str(e1)
-            # Attempt 2: Port 465 (Direct SSL Fallback)
             try:
                 with smtplib.SMTP_SSL(smtp_server, 465, timeout=20) as server:
                     server.login(sender_email, sender_password)
@@ -209,30 +259,31 @@ def send_credentials_email(recipient_email, recipient_name, temp_password, user_
             return True, "Email sent successfully!"
         else:
             return False, f"Connection failed: {last_err}" 
-        return True, "Email sent successfully!"
     except Exception as e:
         return False, str(e)
 
 # ==========================================
-# 3. DATABASE CONNECTION ENGINE (WITH FALLBACK DB URL)
+# 3. DATABASE CONNECTION ENGINE (CENTRALIZED SUPABASE SECRETS)
 # ==========================================
-DEFAULT_DB_URL = "postgresql+psycopg2://postgres.oxyvjstdncnnefbkilaa:5GLJZg5tWE28Wud9@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres"
-
 @st.cache_resource
 def get_db_engine():
     try:
-        db_url = st.secrets.get("SUPABASE_URL", DEFAULT_DB_URL)
-        if not db_url:
-            db_url = DEFAULT_DB_URL
+        if "SUPABASE_URL" in st.secrets:
+            db_url = st.secrets["SUPABASE_URL"]
+        elif "postgres" in st.secrets and "url" in st.secrets["postgres"]:
+            db_url = st.secrets["postgres"]["url"]
+        else:
+            db_url = st.secrets.get("SUPABASE_URL", "")
     except Exception:
-        db_url = DEFAULT_DB_URL
-    return create_engine(db_url, pool_pre_ping=True)
+        db_url = ""
+    return create_engine(db_url, pool_pre_ping=True, pool_size=10, max_overflow=20, pool_recycle=300)
 
 engine = get_db_engine()
 
 # Auto-sync, ensure database tables exist & PURGE ARCHIVE > 30 DAYS
 try:
     with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS last_login TIMESTAMP WITH TIME ZONE;"))
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS deleted_cases_archive (
                 archive_id SERIAL PRIMARY KEY,
@@ -246,7 +297,6 @@ try:
                 raw_case_data_json TEXT
             );
         """))
-        # Auto-purge records older than 30 days from database
         conn.execute(text("""
             DELETE FROM deleted_cases_archive 
             WHERE TO_TIMESTAMP(archived_at, 'YYYY-MM-DD HH24:MI:SS') < NOW() - INTERVAL '30 days'
@@ -255,9 +305,8 @@ try:
 except Exception:
     pass
 
-
 def generate_random_password(length=10):
-    chars = string.ascii_letters + string.digits + "!@#$%&*"
+    chars = string.ascii_letters + string.digits + "@#$%"
     return ''.join(secrets.choice(chars) for _ in range(length))
 
 if "authenticated" not in st.session_state:
@@ -268,6 +317,10 @@ if "autofill_data" not in st.session_state:
     st.session_state["autofill_data"] = {}
 if "redirect_to_module" not in st.session_state:
     st.session_state["redirect_to_module"] = None
+
+if "reset_otp" not in st.session_state:
+    st.session_state["reset_otp"] = None
+    st.session_state["reset_user_email"] = None
 
 def export_to_excel_bytes(df):
     output = BytesIO()
@@ -298,10 +351,10 @@ def parse_date_str(date_str, default_date=date(1995, 1, 1)):
     if not date_str or str(date_str) == "None":
         return default_date
     try:
-        return datetime.strptime(str(date_str).strip(), "%Y-%m-%d").date()
+        return datetime.datetime.strptime(str(date_str).strip(), "%Y-%m-%d").date()
     except Exception:
         try:
-            return datetime.strptime(str(date_str).strip(), "%m-%d-%Y").date()
+            return datetime.datetime.strptime(str(date_str).strip(), "%m-%d-%Y").date()
         except Exception:
             return default_date
 
@@ -313,45 +366,121 @@ DIALECTS_LIST_2 = ["Pangasinense", "Waray", "Chavacano", "Maranao", "Mindanaoan"
 EXCLUDED_CDPD_EMAILS = ("llgatabon.fo10@dswd.gov.ph", "djlwaniwan.fo10@dswd.gov.ph", "stepcelo@gmail.com")
 
 # ==========================================
-# 4. LOGIN PORTAL
+# 4. LOGIN PORTAL & FORGOT/RESET PASSWORD
 # ==========================================
 if not st.session_state["authenticated"] or not st.session_state.get("user_info"):
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        st.image("logo.png", width=600)
+        render_header_logo(width=500)
         st.title("🏛️ PDBBM SCMS Login Portal")
         st.markdown("##### **Peace and Development: Buong Bansa Mapayapa - SCMS Beneficiary Management System**")
         st.caption("Authorized Field Personnel & Case Managers Registry")
         st.divider()
         
-        with st.form("login_form", clear_on_submit=False):
-            login_email = st.text_input("User Email Address")
-            login_pass = st.text_input("Password", type="password")
-            login_submitted = st.form_submit_button("🔒 Login to System", use_container_width=True)
-            
-            if login_submitted:
-                try:
-                    with engine.connect() as conn:
-                        user_res = conn.execute(
-                            text("SELECT first_name, last_name, province, user_role, email, require_change_pass FROM user_accounts WHERE lower(email) = lower(:e) AND password = :p"),
-                            {"e": login_email.strip(), "p": login_pass.strip()}
-                        ).fetchone()
-                except Exception:
-                    user_res = None
+        auth_tab1, auth_tab2 = st.tabs(["🔑 Login Portal", "🔓 Forgot / Reset Password"])
+        
+        with auth_tab1:
+            with st.form("login_form", clear_on_submit=False):
+                login_email = st.text_input("User Email Address").strip()
+                login_pass = st.text_input("Password", type="password").strip()
+                login_submitted = st.form_submit_button("🔒 Login to System", use_container_width=True)
                 
-                if user_res:
-                    st.session_state["authenticated"] = True
-                    st.session_state["user_info"] = {
-                        "name": f"{user_res[0]} {user_res[1]}",
-                        "province": user_res[2],
-                        "role": user_res[3],
-                        "email": user_res[4],
-                        "must_change_pass": bool(user_res[5])
-                    }
-                    st.success(f"✅ Welcome {user_res[0]}!")
-                    st.rerun()
+                if login_submitted:
+                    try:
+                        with engine.connect() as conn:
+                            user_res = conn.execute(
+                                text("SELECT id, first_name, last_name, province, user_role, email, require_change_pass FROM user_accounts WHERE lower(trim(email)) = lower(trim(:e)) AND trim(password) = trim(:p)"),
+                                {"e": login_email, "p": login_pass}
+                            ).fetchone()
+                    except Exception:
+                        user_res = None
+                    
+                    if user_res:
+                        st.session_state["authenticated"] = True
+                        st.session_state["user_info"] = {
+                            "id": user_res[0],
+                            "name": f"{user_res[1]} {user_res[2]}",
+                            "province": user_res[3],
+                            "role": user_res[4],
+                            "email": user_res[5],
+                            "must_change_pass": bool(user_res[6])
+                        }
+                        try:
+                            ph_now = get_ph_time()
+                            with engine.begin() as conn_up:
+                                conn_up.execute(text("UPDATE user_accounts SET last_login = :ll WHERE id = :uid"), {"ll": ph_now, "uid": user_res[0]})
+                        except Exception:
+                            pass
+                        
+                        st.toast(f"Welcome back, {user_res[1]}!", icon="👋")
+                        st.success(f"✅ Welcome {user_res[1]}!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Invalid Email Address or Password.")
+                        
+        with auth_tab2:
+            st.markdown("##### 🔑 Request Password Reset Verification Code")
+            reset_email = st.text_input("Enter Registered Email Address:")
+
+            if st.button("📩 Send Code via Email", use_container_width=True):
+                with engine.connect() as conn:
+                    found_user = conn.execute(
+                        text("SELECT first_name, last_name, email, user_role FROM user_accounts WHERE lower(email) = lower(:email)"),
+                        {"email": reset_email.strip()},
+                    ).fetchone()
+
+                if found_user:
+                    otp = "".join(random.choices(string.digits, k=6))
+                    st.session_state["reset_otp"] = otp
+                    st.session_state["reset_user_email"] = found_user[2]
+                    st.session_state["reset_otp_time"] = datetime.datetime.now()
+
+                    target_name = f"{found_user[0]} {found_user[1]}"
+                    sent_ok, msg_res = send_credentials_email(found_user[2], target_name, otp, found_user[3])
+                    if sent_ok:
+                        st.toast("Verification code sent!", icon="📩")
+                        st.success(f"📩 Reset Verification Code has been dispatched directly to {found_user[2]}! (Valid for 5 minutes)")
+                    else:
+                        st.error(f"❌ Email dispatch failed: {msg_res}. Please check system logs or contact Admin.")
                 else:
-                    st.error("❌ Invalid Email or Password.")
+                    st.error("No account associated with the provided email address!")
+
+            if st.session_state.get("reset_otp"):
+                st.markdown("---")
+                st.markdown("##### 🔐 Verify Code & Change Password")
+                entered_otp = st.text_input("Enter 6-Digit OTP Code:")
+                new_pass = st.text_input("New Password:", type="password")
+                confirm_pass = st.text_input("Confirm New Password:", type="password")
+
+                if st.button("💾 Save New Password", use_container_width=True):
+                    otp_created_at = st.session_state.get("reset_otp_time")
+                    is_expired = False
+                    if otp_created_at:
+                        time_diff = (datetime.datetime.now() - otp_created_at).total_seconds()
+                        if time_diff > 300: # 5 minutes TTL
+                            is_expired = True
+
+                    if is_expired:
+                        st.error("⏰ Verification Code has EXPIRED (5-minute limit reached). Please request a new code.")
+                        st.session_state["reset_otp"] = None
+                        st.session_state["reset_user_email"] = None
+                    elif entered_otp == st.session_state["reset_otp"]:
+                        if new_pass and new_pass == confirm_pass:
+                            u_email = st.session_state["reset_user_email"]
+                            with engine.begin() as conn:
+                                conn.execute(
+                                    text("UPDATE user_accounts SET password = :p, require_change_pass = 0 WHERE lower(email) = lower(:e)"),
+                                    {"p": new_pass, "e": u_email},
+                                )
+                            st.toast("Password updated successfully!", icon="✅")
+                            st.success("Password updated successfully! You may now proceed to login.")
+                            st.session_state["reset_otp"] = None
+                            st.session_state["reset_user_email"] = None
+                        else:
+                            st.error("Passwords do not match or field is empty!")
+                    else:
+                        st.error("Invalid OTP Code provided!")
+
     st.stop()
 
 # ==========================================
@@ -376,6 +505,7 @@ if st.session_state.get("user_info", {}).get("must_change_pass"):
                                 {"p": new_p1, "e": u_email_curr}
                             )
                         st.session_state["user_info"]["must_change_pass"] = False
+                        st.toast("Password changed successfully!", icon="✅")
                         st.success("✅ Password changed successfully!")
                         st.rerun()
                     else:
@@ -460,7 +590,7 @@ with st.sidebar:
     st.title("🏛️ PDBBM SCMS Portal")
     st.caption("Peace & Development: Buong Bansa Mapayapa")
     st.success(f"👤 **{user_name}**")
-    st.caption(f"🔑 Role: **{user_role}** | 📍 Jurisdiction: **{user_province}**")
+    st.caption(f"🔑 Role: <span class='role-badge'>{user_role}</span> | 📍 Jurisdiction: **{user_province}**", unsafe_allow_html=True)
     st.caption(f"📧 Email: `{user_email}`")
     
     try:
@@ -473,18 +603,17 @@ with st.sidebar:
     if user_role in ["Superuser", "Admin"]:
         try:
             with engine.connect() as conn:
-                # Auto-clean orphaned deletion requests whose cases were already deleted directly
                 conn.execute(text("UPDATE deletion_requests SET status = 'APPROVED' WHERE status = 'PENDING' AND case_id NOT IN (SELECT id FROM cases)"))
                 pending_del_cnt = conn.execute(text("SELECT COUNT(*) FROM deletion_requests WHERE status = 'PENDING'")).fetchone()[0]
             if pending_del_cnt > 0:
-                if st.button(f"🔔 Deletion Requests: {pending_del_cnt} Pending (Click to View)", use_container_width=True):
+                if st.button(f"🔔 Deletion Requests: {pending_del_cnt} Pending", use_container_width=True):
                     st.session_state["redirect_to_module"] = "📊 Masterlist Database"
                     st.session_state["target_tab_idx"] = 4
                     st.rerun()
         except Exception:
             pass
 
-    col_side_btn1, col_side_btn2 = st.columns(2)
+    col_side_btn1, col_side_btn2 = st.sidebar.columns(2)
     with col_side_btn1:
         if st.button("🔄 Refresh Data", use_container_width=True):
             st.cache_data.clear()
@@ -521,9 +650,9 @@ with st.sidebar:
     st.divider()
     st.markdown(
         """
-        <div style="text-align: center; font-size: 0.8em; color: #6c757d;">
+        <div style="text-align: center; font-size: 0.8em; color: #CBD5E1;">
             💻 <b>System Developer & Architect</b><br>
-            Developed with ❤️ by <br><b>LOUIE B. IDULSA - PDBBM ITO I</b><br>
+            Developed with ❤️ by <br><b style="color:#0284C7;">LOUIE B. IDULSA - PDBBM ITO I</b><br>
             <i>DSWD FO X - PDBBM SCMS © 2026</i>
         </div>
         """, 
@@ -633,7 +762,6 @@ elif menu_selection == "👤 1. Personal & Profiling":
         c_data = get_client_record(selected_id)
         st.info(f"✏ Editing Local Database Beneficiary: **{c_data.get('first_name','')} {c_data.get('last_name','')}**")
 
-    # CLEAN SINGLE TFDCC HH ID FIELD (REMOVED DUPLICATE)
     control_no_val = st.text_input("TFDCC Household ID No.* / DC Serial Number (for MILF):", value=str(c_data.get("control_no", "") or c_data.get("dc_serial_no", "") or ""), help="For MILF clients, use TFDCC HH ID and DC Serial Numbers. For CPP/NPA/NDF and FVE, use JAPIC Certification.")
 
     if control_no_val.strip() != "":
@@ -652,11 +780,10 @@ elif menu_selection == "👤 1. Personal & Profiling":
     with st.form("personal_info_form"):
         col_hdr1, col_hdr2, col_hdr3 = st.columns([2, 2, 2])
         with col_hdr1:
-            gis_date_picker = st.date_input("Date (MM/DD/YYYY):", value=parse_date_str(c_data.get("gis_date"), datetime.today().date()))
+            gis_date_picker = st.date_input("Date (MM/DD/YYYY):", value=parse_date_str(c_data.get("gis_date"), datetime.date.today()))
         with col_hdr2:
             crn_number = st.text_input("Combatant Reference Number (CRN) / Client ID:", value=str(c_data.get("crn_number", "") or c_data.get("client_id", "") or ""))
         with col_hdr3:
-            # AUTOMATIC ENCODING COMPLETION STATUS (COMPUTED READ-ONLY FIELD)
             sw_assessment_val = str(c_data.get("sw_assessment", "") or "").strip()
             curr_prof_st = "Completed" if sw_assessment_val != "" else "Incomplete / Draft"
             profile_status = st.text_input("📌 Encoding Completion Status (Auto-Computed):", value=curr_prof_st, disabled=True)
@@ -731,9 +858,6 @@ elif menu_selection == "👤 1. Personal & Profiling":
             reasons_leaving = st.text_area("Events or Circumstances Leading to Disengagement:", value=str(c_data.get("reasons_leaving", "") or ""))
             intentions_motivations = st.text_area("Current Intentions and Motivations:", value=str(c_data.get("intentions_motivations", "") or ""))
 
-        # =========================================================
-        # DIALECTS CHECKBOX MATRIX (GIS FORM PAGE 1 COMPLIANT)
-        # =========================================================
         st.divider()
         st.markdown("##### 🗣️ What dialect are you able to? (Anong diyalekto ang iyong alam gamitin?)")
         
@@ -1219,10 +1343,7 @@ elif menu_selection == "📊 Masterlist Database":
     if user_role == "Superuser":
         tabs_list.append("📦 Deleted Cases Archive")
 
-    # Handle automatic tab focus from notification link click
     if "target_tab_idx" in st.session_state and st.session_state["target_tab_idx"] is not None:
-        # Note: In Streamlit, default active tab can be visually guided or focused
-        # We also show a high priority alert banner at top of Masterlist Database
         st.warning("🔔 **ACTION REQUIRED:** You have pending deletion requests below. Palihug tan-awa sa **🗑️ Pending Delete Approvals** tab.")
         st.session_state["target_tab_idx"] = None
 
@@ -1277,15 +1398,13 @@ elif menu_selection == "📊 Masterlist Database":
                     if st.button(btn_label, use_container_width=True):
                         if del_reason.strip():
                             req_case_id, req_hhid, req_cname = del_options[selected_del]
-                            req_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            req_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             try:
                                 if user_role in ["Superuser", "Admin"]:
-                                    # DIRECT DELETE & AUTOMATIC ARCHIVE FOR SUPERUSER/ADMIN
                                     df_raw = pd.read_sql_query(text("SELECT * FROM cases WHERE id = :id"), engine, params={"id": req_case_id})
                                     raw_json = df_raw.to_json(orient="records") if not df_raw.empty else "{}"
                                     
                                     with engine.begin() as conn:
-                                        # Ensure table exists in Supabase if not yet created
                                         conn.execute(text("""
                                             CREATE TABLE IF NOT EXISTS deleted_cases_archive (
                                                 archive_id SERIAL PRIMARY KEY,
@@ -1315,7 +1434,6 @@ elif menu_selection == "📊 Masterlist Database":
                                     st.success(f"✅ Success! Case #{req_case_id} ({req_cname}) has been permanently deleted and safely backed up to 'Deleted Cases Archive'.")
                                     st.rerun()
                                 else:
-                                    # REGULAR USER SUBMIT REQUEST TO SUPERADMIN
                                     with engine.begin() as conn:
                                         conn.execute(
                                             text("""
@@ -1451,7 +1569,7 @@ elif menu_selection == "📊 Masterlist Database":
                             df_raw = pd.read_sql_query(text("SELECT * FROM cases WHERE id = :id"), engine, params={"id": c_id})
                             raw_json = df_raw.to_json(orient="records") if not df_raw.empty else "{}"
                             
-                            archived_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            archived_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             with engine.begin() as conn:
                                 conn.execute(
                                     text("""
@@ -1495,11 +1613,10 @@ elif menu_selection == "📊 Masterlist Database":
                 df_arch = pd.DataFrame()
             
             if not df_arch.empty:
-                # Calculate Live 30-Day Countdown for each archived item
                 def calc_countdown(arch_date_str):
                     try:
-                        dt = datetime.strptime(str(arch_date_str).strip(), "%Y-%m-%d %H:%M:%S")
-                        days_passed = (datetime.now() - dt).days
+                        dt = datetime.datetime.strptime(str(arch_date_str).strip(), "%Y-%m-%d %H:%M:%S")
+                        days_passed = (datetime.datetime.now() - dt).days
                         rem = 30 - days_passed
                         if rem > 5:
                             return f"⏳ {max(0, rem)} Days Remaining"
@@ -1512,7 +1629,6 @@ elif menu_selection == "📊 Masterlist Database":
 
                 df_arch['Retention Countdown (30-Day Limit)'] = df_arch['Date Deleted'].apply(calc_countdown)
                 
-                # Reorder columns to display Countdown prominently
                 cols = ['Archive ID', 'Retention Countdown (30-Day Limit)', 'Original Case ID', 'Household ID', 'Client Name', 'Requested By', 'Reason', 'Approved By', 'Date Deleted']
                 df_arch = df_arch[[c for c in cols if c in df_arch.columns]]
                 
@@ -1552,12 +1668,52 @@ elif menu_selection == "📊 Masterlist Database":
                 st.info("No archived deleted records found.")
 
 # ==========================================
-# USER MANAGEMENT MODULE
+# USER MANAGEMENT MODULE (SUPERUSER LIVE MONITORING INCLUDED)
 # ==========================================
 elif menu_selection == "👥 User Management" and user_role == "Superuser":
-    st.subheader("👥 Superuser Panel: User Account Management")
+    st.subheader("👥 Superuser Panel: User Account Management & Live Login Monitor")
+
     if "generated_pass" not in st.session_state:
         st.session_state["generated_pass"] = generate_random_password()
+
+    st.markdown("##### 🔴 Live System User Login Activity & Audit Log:")
+
+    @st.cache_data(ttl=10)
+    def fetch_scms_users_fast():
+        with engine.connect() as conn:
+            return conn.execute(
+                text("SELECT id, first_name || ' ' || last_name AS name, email, user_role, last_login FROM user_accounts ORDER BY last_login DESC NULLS LAST LIMIT 50")
+            ).fetchall()
+
+    try:
+        active_logs = fetch_scms_users_fast()
+    except Exception:
+        active_logs = []
+
+    if active_logs:
+        col_act1, col_act2 = st.columns([2, 1])
+        with col_act1:
+            st.markdown("###### **Recently Active Users / Login Sessions:**")
+            for u in active_logs[:5]:
+                u_name = u[1] if u[1] else u[2]
+                last_time = format_ph_time(u[4])
+                is_curr = "🟢 CURRENT SESSION ONLINE" if u[2] == user_email else f"🕒 Last Online: {last_time}"
+
+                st.markdown(
+                    f"""
+                    <div class="active-user-card">
+                        <b>👤 {u_name}</b> (`{u[2]}`) &nbsp;|&nbsp; 
+                        Role: <span class='role-badge'>{u[3]}</span> &nbsp;|&nbsp; 
+                        <span style="color:#0284C7; font-weight:bold;">{is_curr}</span>
+                    </div>
+                """,
+                    unsafe_allow_html=True,
+                )
+
+        with col_act2:
+            st.info(f"📊 **Total System Accounts:** `{len(active_logs)}` Users\n\n🛡️ **Superuser Privileges:** Live real-time login timestamp monitoring active (Asia/Manila PST).")
+
+    st.divider()
 
     col_user_a, col_user_b = st.columns(2)
     with col_user_a:
@@ -1644,16 +1800,66 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
                         st.info(f"🔑 **NEW TEMPORARY PASS:** `{new_temp_pass}`")
                 except Exception as ex:
                     st.error(f"❌ DATABASE ERROR: {ex}")
+            
+            st.divider()
+            st.markdown("##### ✏️ Direct Set Custom Password (Manual Fix)")
+            manual_custom_pass = st.text_input("Enter Manual Password for Selected User:", key="man_pass_scms").strip()
+            if st.button("💾 Set Exact Custom Password", use_container_width=True, key="btn_set_man_scms"):
+                if manual_custom_pass:
+                    res_id, res_email, res_full_name, res_role = u_dict[selected_reset_user]
+                    try:
+                        with engine.begin() as conn:
+                            conn.execute(text("UPDATE user_accounts SET password = trim(:p), require_change_pass = 0 WHERE id = :id"), {"p": manual_custom_pass, "id": res_id})
+                        st.toast("✅ Custom password updated!", icon="🔑")
+                        st.success(f"✅ Password for {res_email} manually set to: `{manual_custom_pass}`!")
+                    except Exception as ex:
+                        st.error(f"❌ DATABASE ERROR: {ex}")
+                else:
+                    st.error("Palihug sulati ang manual password.")
         else:
             st.warning("No users match your search criteria.")
 
     st.divider()
+    st.subheader("📋 Registered Users Masterlist & Login Timestamps")
     try:
         df_users = pd.read_sql_query(
-            text("SELECT id, first_name || ' ' || last_name AS Name, email AS Email, user_role AS Role, province AS Province FROM user_accounts WHERE user_role IN ('Superuser', 'Admin', 'Team Leader', 'User') AND lower(email) NOT IN :ex_emails"),
+            text("SELECT id, first_name || ' ' || last_name AS Name, email AS Email, user_role AS Role, province AS Province, require_change_pass, last_login FROM user_accounts WHERE user_role IN ('Superuser', 'Admin', 'Team Leader', 'User') AND lower(email) NOT IN :ex_emails ORDER BY id DESC"),
             engine,
             params={"ex_emails": tuple(e.lower() for e in EXCLUDED_CDPD_EMAILS)}
         )
+        if not df_users.empty and "last_login" in df_users.columns:
+            df_users["last_login"] = df_users["last_login"].apply(format_ph_time)
         st.dataframe(df_users, use_container_width=True, hide_index=True)
+
+        st.divider()
+        with st.expander("⚙️ Superuser Action Panel (Delete User Account)"):
+            u_del_list = df_users[df_users["Email"].str.lower() != user_email.lower()]["id"].tolist() if "id" in df_users.columns else []
+            if u_del_list:
+                sel_del_uid = st.selectbox("Select User ID to Delete from Database:", u_del_list, key="sel_del_uid_scms")
+                u_info_row = df_users[df_users["id"] == sel_del_uid].iloc[0]
+                st.warning(f"⚠️ Imong idelete si **{u_info_row.get('Name', '')}** (`{u_info_row.get('Email', '')}`).")
+                if st.button("🗑️ Permanently Delete User Account", use_container_width=True, key="btn_del_scms_user"):
+                    try:
+                        with engine.begin() as conn:
+                            conn.execute(text("DELETE FROM user_accounts WHERE id = :id"), {"id": sel_del_uid})
+                        st.cache_data.clear()
+                        st.toast("✅ User account removed!", icon="🗑️")
+                        st.success("User account deleted successfully!")
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"❌ DATABASE ERROR: {ex}")
+            else:
+                st.info("No deletable user accounts found.")
     except Exception:
         pass
+
+st.divider()
+st.markdown(
+    """
+    <div style="text-align: center; font-size: 0.85em; color: #6c757d; padding-bottom: 20px;">
+        ⚙️ <b>PDBBM SCMS Beneficiary Management System</b> | Powered by Streamlit & Python<br>
+        Designed & Developed by <b>LOUIE B. IDULSA - PDBBM ITO I</b> • DSWD Field Office X
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
