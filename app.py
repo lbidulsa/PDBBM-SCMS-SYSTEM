@@ -331,14 +331,14 @@ def export_to_excel_bytes(df):
     return output.getvalue()
 
 def render_sidebar_logo():
-    if os.path.exists("logo.png"):
-        st.image("logo.png", width=250)
-    elif os.path.exists("Peace and Dev LOGO.jpg"):
-        st.image("Peace and Dev LOGO.jpg", width=200)
+    if os.path.exists("Peace and Dev LOGO.jpg"):
+        st.image("Peace and Dev LOGO.jpg", width=220)
+    elif os.path.exists("logo.png"):
+        st.image("logo.png", width=220)
     else:
         st.markdown("## 🕊️ **DSWD FIELD OFFICE X**")
 
-def render_header_logo(width=400):
+def render_header_logo(width=350):
     if os.path.exists("Peace and Dev LOGO.jpg"):
         st.image("Peace and Dev LOGO.jpg", width=width)
     elif os.path.exists("logo.png"):
@@ -377,7 +377,7 @@ EXCLUDED_CDPD_EMAILS = (
 if not st.session_state["authenticated"] or not st.session_state.get("user_info"):
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        render_header_logo(width=400)
+        render_header_logo(width=350)
         st.title("🏛️ PDBBM SCMS Login Portal")
         st.markdown("##### **Peace and Development: Buong Bansa Mapayapa - SCMS Beneficiary Management System**")
         st.caption("Authorized Field Personnel & Case Managers Registry")
@@ -667,7 +667,7 @@ with st.sidebar:
 
 head_col1, head_col2 = st.columns([2, 7])
 with head_col1:
-    render_header_logo(width=180)
+    render_header_logo(width=160)
 with head_col2:
     st.title("PDBBM SCMS Beneficiary Management System")
     st.caption("DSWD Field Office X • Peace & Development Program Registry")
