@@ -377,7 +377,11 @@ EXCLUDED_CDPD_EMAILS = (
     "stepcelo@gmail.com",
     "paulicanjuvie0@gmail.com",
     "ryandswdfox1002@gmail.com",
-    "magierooth@gmail.com"
+    "magierooth@gmail.com",
+    "evascojr.antonio@gmail.com",
+    "michaeljudaya75@gmail.com",
+    "nelsongumahadjr@gmail.com",
+    "nathaniel.felicilda@gmail.com"
 )
 
 # ==========================================
