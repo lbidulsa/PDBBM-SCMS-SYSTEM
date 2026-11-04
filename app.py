@@ -383,6 +383,7 @@ EXCLUDED_CDPD_EMAILS = (
     "nelsongumahadjr@gmail.com",
     "nathaniel.felicilda@gmail.com",
     "esyduhaylunsod14@gmail.com",
+    "esylduhaylunsod14@gmail.com",
     "amernasif6@gmail.com",
     "aj.alentajan16@gmail.com"
 )
