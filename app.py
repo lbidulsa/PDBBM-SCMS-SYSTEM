@@ -332,13 +332,13 @@ def export_to_excel_bytes(df):
 
 def render_sidebar_logo():
     if os.path.exists("logo.png"):
-        st.image("logo.png", width=400)
+        st.image("logo.png", width=250)
     elif os.path.exists("Peace and Dev LOGO.jpg"):
         st.image("Peace and Dev LOGO.jpg", width=200)
     else:
         st.markdown("## 🕊️ **DSWD FIELD OFFICE X**")
 
-def render_header_logo(width=200):
+def render_header_logo(width=400):
     if os.path.exists("Peace and Dev LOGO.jpg"):
         st.image("Peace and Dev LOGO.jpg", width=width)
     elif os.path.exists("logo.png"):
@@ -361,8 +361,15 @@ def parse_date_str(date_str, default_date=date(1995, 1, 1)):
 DIALECTS_LIST_1 = ["English", "Tagalog", "Bikol", "Cebuano", "Hiligaynon", "Ilokano", "Kagan", "Pampango", "Iranun"]
 DIALECTS_LIST_2 = ["Pangasinense", "Waray", "Chavacano", "Maranao", "Mindanaoan", "Tausūg", "Yakan"]
 
-# EXCLUDED CDPD ACCOUNTS LIST FOR USER MANAGEMENT
-EXCLUDED_CDPD_EMAILS = ("llgatabon.fo10@dswd.gov.ph", "djlwaniwan.fo10@dswd.gov.ph", "stepcelo@gmail.com")
+# EXCLUDED CDPD ACCOUNTS LIST FOR USER MANAGEMENT & SCMS LIVE MONITOR
+EXCLUDED_CDPD_EMAILS = (
+    "llgatabon.fo10@dswd.gov.ph", 
+    "djlwaniwan.fo10@dswd.gov.ph", 
+    "stepcelo@gmail.com",
+    "paulicanjuvie0@gmail.com",
+    "ryandswdfox1002@gmail.com",
+    "magierooth@gmail.com"
+)
 
 # ==========================================
 # 4. LOGIN PORTAL & FORGOT/RESET PASSWORD
@@ -370,7 +377,7 @@ EXCLUDED_CDPD_EMAILS = ("llgatabon.fo10@dswd.gov.ph", "djlwaniwan.fo10@dswd.gov.
 if not st.session_state["authenticated"] or not st.session_state.get("user_info"):
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        render_header_logo(width=500)
+        render_header_logo(width=400)
         st.title("🏛️ PDBBM SCMS Login Portal")
         st.markdown("##### **Peace and Development: Buong Bansa Mapayapa - SCMS Beneficiary Management System**")
         st.caption("Authorized Field Personnel & Case Managers Registry")
@@ -1679,9 +1686,16 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
 
     @st.cache_data(ttl=10)
     def fetch_scms_users_fast():
+        ex_emails = tuple(e.lower() for e in EXCLUDED_CDPD_EMAILS)
         with engine.connect() as conn:
             return conn.execute(
-                text("SELECT id, first_name || ' ' || last_name AS name, email, user_role, last_login FROM user_accounts ORDER BY last_login DESC NULLS LAST LIMIT 50")
+                text("""
+                    SELECT id, first_name || ' ' || last_name AS name, email, user_role, last_login 
+                    FROM user_accounts 
+                    WHERE lower(email) NOT IN :ex_emails
+                    ORDER BY last_login DESC NULLS LAST LIMIT 50
+                """),
+                {"ex_emails": ex_emails}
             ).fetchall()
 
     try:
