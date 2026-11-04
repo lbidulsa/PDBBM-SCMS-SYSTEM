@@ -194,7 +194,6 @@ if hasattr(st, "dialog"):
 def send_credentials_email(recipient_email, recipient_name, temp_password, user_role="User"):
     sender_email = st.secrets.get("EMAIL_SENDER", "lbidulsa.fo10@dswd.gov.ph")
     sender_password = st.secrets.get("EMAIL_PASSWORD", "")
-    system_link = "https://pdbbmscms.streamlit.app/"
 
     if not sender_password:
         return False, "EMAIL_PASSWORD secrets key is missing or blank in Streamlit Cloud."
@@ -263,7 +262,7 @@ def send_credentials_email(recipient_email, recipient_name, temp_password, user_
         return False, str(e)
 
 # ==========================================
-# 3. DATABASE CONNECTION ENGINE (CENTRALIZED SUPABASE SECRETS)
+# 3. DATABASE CONNECTION ENGINE (READS FROM ST.SECRETS)
 # ==========================================
 @st.cache_resource
 def get_db_engine():
