@@ -346,6 +346,15 @@ def render_header_logo(width=500):
     else:
         st.markdown("## 🕊️ **DSWD FIELD OFFICE X**")
 
+def render_main_header_logo(width=160):
+    """Circle Peace & Dev Logo strictly for Main Page Header"""
+    if os.path.exists("Peace and Dev LOGO.jpg"):
+        st.image("Peace and Dev LOGO.jpg", width=width)
+    elif os.path.exists("logo.png"):
+        st.image("logo.png", width=width)
+    else:
+        st.markdown("## 🕊️ **DSWD FIELD OFFICE X**")
+
 def parse_date_str(date_str, default_date=date(1995, 1, 1)):
     if not date_str or str(date_str) == "None":
         return default_date
@@ -665,9 +674,10 @@ with st.sidebar:
         unsafe_allow_html=True
     )
 
-head_col1, head_col2 = st.columns([3, 7])
+# MAIN PAGE HEADER WITH CIRCLE PEACE AND DEV LOGO
+head_col1, head_col2 = st.columns([2, 7])
 with head_col1:
-    render_header_logo(width=280)
+    render_main_header_logo(width=160)
 with head_col2:
     st.title("PDBBM SCMS Beneficiary Management System")
     st.caption("DSWD Field Office X • Peace & Development Program Registry")
