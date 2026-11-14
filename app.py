@@ -66,6 +66,22 @@ st.markdown("""
         background: transparent !important;
         visibility: visible !important;
     }
+
+    /* Hide Fork, GitHub Icon, Share, Star, and Deploy buttons ONLY */
+    div[data-testid="stToolbarActions"],
+    .stAppDeployButton,
+    a[href*="github.com"],
+    button[title="View app source on GitHub"],
+    button[aria-label="View app source on GitHub"] {
+        display: none !important;
+        visibility: hidden !important;
+    }
+
+    /* Keep 3 dots (⋮) MainMenu visible for Settings -> Change Theme */
+    #MainMenu {
+        visibility: visible !important;
+        display: block !important;
+    }
     
     /* Ensure Sidebar Expand/Collapse Arrow is always visible and clickable */
     div[data-testid="stSidebarCollapsedControl"],
@@ -76,10 +92,10 @@ st.markdown("""
         z-index: 999999 !important;
     }
 
-    /* Keep MainMenu (⋮) visible so users can access Settings -> Change Theme */
-    #MainMenu { visibility: visible !important; }
-    footer { visibility: hidden !important; display: none !important; }
-    .stAppDeployButton { display: none !important; }
+    footer {
+        visibility: hidden !important;
+        display: none !important;
+    }
     
     .dialect-box {
         background-color: var(--secondary-background-color, #FFFFFF);
