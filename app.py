@@ -61,16 +61,28 @@ st.set_page_config(
 # ---------------------------------------------------------
 st.markdown("""
     <style>
-    .stApp { background-color: #F8F9FA; color: #0F172A; }
+    /* Keep Header transparent so Sidebar Expand Arrow & Theme Menu remain accessible */
+    header[data-testid="stHeader"] {
+        background: transparent !important;
+        visibility: visible !important;
+    }
+    
+    /* Ensure Sidebar Expand/Collapse Arrow is always visible and clickable */
+    div[data-testid="stSidebarCollapsedControl"],
+    button[data-testid="stExpandSidebarButton"],
+    button[data-testid="stBaseButton-headerNoPadding"] {
+        visibility: visible !important;
+        display: flex !important;
+        z-index: 999999 !important;
+    }
 
-    /* Security Fix: Hide Streamlit Header, GitHub Repository Link Icon, and Main Menu */
-    header[data-testid="stHeader"] { visibility: hidden !important; display: none !important; }
-    #MainMenu { visibility: hidden !important; display: none !important; }
+    /* Keep MainMenu (⋮) visible so users can access Settings -> Change Theme */
+    #MainMenu { visibility: visible !important; }
     footer { visibility: hidden !important; display: none !important; }
     .stAppDeployButton { display: none !important; }
     
     .dialect-box {
-        background-color: #FFFFFF;
+        background-color: var(--secondary-background-color, #FFFFFF);
         border: 1px solid #CBD5E1;
         border-radius: 8px;
         padding: 12px;
@@ -84,7 +96,7 @@ st.markdown("""
 
     /* METRIC CARDS GLOW & HOVER ANIMATION */
     div[data-testid="stMetric"] {
-        background: #FFFFFF !important;
+        background: var(--secondary-background-color, #FFFFFF) !important;
         border: 1px solid #CBD5E1 !important;
         border-radius: 14px !important;
         padding: 16px !important;
@@ -98,7 +110,6 @@ st.markdown("""
         box-shadow: 0 0 18px rgba(225, 29, 72, 0.5), 0 0 28px rgba(225, 29, 72, 0.25) !important;
     }
     div[data-testid="stMetric"] label {
-        color: #475569 !important;
         font-size: 12px !important;
         font-weight: 700 !important;
         text-transform: uppercase;
@@ -144,7 +155,7 @@ st.markdown("""
     }
 
     .active-user-card {
-        background: #FFFFFF;
+        background: var(--secondary-background-color, #FFFFFF);
         border-left: 4px solid #10B981;
         padding: 12px 16px;
         border-radius: 8px;
