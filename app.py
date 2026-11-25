@@ -1,9 +1,10 @@
+import base64
 import datetime
-from datetime import date
 import io
-from io import BytesIO
+import json
 import os
 import random
+import re
 import secrets
 import smtplib
 import string
@@ -13,14 +14,23 @@ from email.mime.text import MIMEText
 import pandas as pd
 from PIL import ExifTags, Image
 import plotly.express as px
+import plotly.graph_objects as go
 from sqlalchemy import create_engine, text
 import streamlit as st
 
-# Security & TTL Constants
-OTP_EXPIRY_SECONDS = 120          # 2 minutes for Password Reset OTP
-TEMP_PASS_EXPIRY_HOURS = 24       # 24 hours for Temporary Password
+try:
+    import pypdfium2 as pdfium
+    HAS_PDFIUM = True
+except ImportError:
+    HAS_PDFIUM = False
 
-# Timezone Support for Philippine Standard Time (PST - UTC+8)
+try:
+    from streamlit_pdf_viewer import pdf_viewer as st_pdf_viewer
+    HAS_ST_PDF_VIEWER = True
+except ImportError:
+    HAS_ST_PDF_VIEWER = False
+
+# Timezone Support
 try:
     from zoneinfo import ZoneInfo
     PH_TZ = ZoneInfo("Asia/Manila")
@@ -28,6 +38,20 @@ except ImportError:
     import pytz
     PH_TZ = pytz.timezone("Asia/Manila")
 
+try:
+    from streamlit_js_eval import get_geolocation
+    HAS_GEO_EVAL = True
+except ImportError:
+    HAS_GEO_EVAL = False
+
+# Security & Archive TTL Constants
+OTP_EXPIRY_SECONDS = 120          # 2 minutes for Password Reset OTP
+TEMP_PASS_EXPIRY_HOURS = 24       # 24 hours for Temporary Password
+ARCHIVE_RETENTION_DAYS = 30       # 30 days auto-archive retention window
+
+# ---------------------------------------------------------
+# 🇵🇭 TIMEZONE HELPER FUNCTION FOR PHILIPPINE STANDARD TIME
+# ---------------------------------------------------------
 def get_ph_time():
     """Returns current datetime in Philippine Standard Time (Asia/Manila UTC+8)"""
     return datetime.datetime.now(PH_TZ)
@@ -49,6 +73,301 @@ def format_ph_time(dt_val):
     except Exception:
         return str(dt_val)
 
+# ---------------------------------------------------------
+# BASE64 CONVERT HELPER FOR PERMANENT IMAGE STORAGE
+# ---------------------------------------------------------
+def convert_image_to_base64(uploaded_file):
+    """Converts uploaded photo directly to Base64 string for database storage"""
+    if uploaded_file is not None:
+        file_bytes = uploaded_file.getvalue()
+        base64_encoded = base64.b64encode(file_bytes).decode('utf-8')
+        return f"data:{uploaded_file.type};base64,{base64_encoded}"
+    return ""
+
+# ---------------------------------------------------------
+# TEXT NORMALIZATION HELPER FOR CHART LABELS
+# ---------------------------------------------------------
+def clean_label_series(series, fallback="Unspecified"):
+    """Normalizes spacing, hyphens, and whitespace so near-duplicate labels merge cleanly."""
+    cleaned = (
+        series.fillna(fallback)
+        .astype(str)
+        .apply(lambda s: re.sub(r"\s*-\s*", " - ", re.sub(r"\s+", " ", s)).strip())
+    )
+    return cleaned.replace("", fallback)
+
+# ---------------------------------------------------------
+# EXECUTIVE PLOTLY STYLING HELPER (PIE CHARTS + PAMANA THEME)
+# ---------------------------------------------------------
+PAMANA_PALETTE = [
+    "#0F2A4A", "#0284C7", "#0EA5E9", "#1D4ED8",
+    "#0D9488", "#2563EB", "#38BDF8", "#1E3A8A",
+    "#0F766E", "#0369A1", "#3B82F6", "#06B6D4"
+]
+
+def style_vibrant_fig(fig, title_text="", height=350, is_bar=False):
+    fig.update_layout(
+        title=dict(
+            text=title_text,
+            font=dict(size=14, color="#0F2A4A", family="Arial, sans-serif"),
+            x=0.01,
+        ) if title_text else None,
+        paper_bgcolor="rgba(255,255,255,0.96)",
+        plot_bgcolor="rgba(248,250,255,0.98)",
+        font=dict(color="#1E293B", family="Arial, sans-serif"),
+        height=height,
+        margin=dict(l=16, r=24, t=36 if title_text else 22, b=26),
+        hoverlabel=dict(
+            bgcolor="#0F2A4A",
+            font_size=12,
+            font_family="Arial, sans-serif",
+            font_color="#FFFFFF",
+            bordercolor="#38BDF8",
+        ),
+        transition=dict(duration=600, easing="cubic-in-out"),
+    )
+    if is_bar:
+        fig.update_traces(
+            marker_line_color="#0F2A4A",
+            marker_line_width=1.1,
+            opacity=0.95,
+        )
+    return fig
+
+def build_pie_chart(df_plot, names_col, values_col, height=330, color_map=None, hole=0.0):
+    """Builds a clean pie chart with clear percentage labels and side legend."""
+    fig = px.pie(
+        df_plot,
+        names=names_col,
+        values=values_col,
+        hole=hole,
+        color=names_col,
+        color_discrete_map=color_map,
+        color_discrete_sequence=PAMANA_PALETTE,
+    )
+    fig.update_traces(
+        textposition="inside",
+        textinfo="percent",
+        textfont=dict(size=13, color="#FFFFFF", family="Arial, sans-serif"),
+        marker=dict(line=dict(color="#FFFFFF", width=1.8)),
+        sort=False,
+    )
+    fig.update_layout(
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="middle",
+            y=0.5,
+            xanchor="left",
+            x=1.02,
+            font=dict(size=12, color="#0F2A4A"),
+        ),
+    )
+    return style_vibrant_fig(fig, height=height)
+
+# ---------------------------------------------------------
+# PAGE CONFIGURATION & CUSTOM STYLING
+# ---------------------------------------------------------
+st.set_page_config(
+    page_title="PAMANA Peace & Dev Management System",
+    page_icon="🕊️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown(
+    """
+    <style>
+    /* Keep Streamlit Header & Toolbar visible for Sidebar Toggle (<<) and 3-Dots Theme Menu (⋮) */
+    header[data-testid="stHeader"] {
+        background: transparent !important;
+    }
+
+    /* Hide Deploy Button, Toolbar Action Buttons (GitHub/Fork), Footer & Cloud Viewer Badge */
+    .stAppDeployButton,
+    [data-testid="stToolbarActions"],
+    [data-testid="stActionButtonIcon"],
+    footer,
+    [data-testid="stStatusWidget"],
+    .viewerBadge_container__1QSob,
+    .viewerBadge_link__1S137,
+    .viewerBadge_text__1JaDK,
+    div[class^="viewerBadge_"],
+    div[class^="_profileContainer_"],
+    div[class^="_terminalButton_"],
+    a[href*="streamlit.io/cloud"] {
+        visibility: hidden !important;
+        display: none !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+    }
+
+    /* Ensure Sidebar Collapse/Expand Button (<< / >) and 3-Dots MainMenu Stay Visible */
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="collapsedControl"],
+    #MainMenu {
+        visibility: visible !important;
+        display: flex !important;
+    }
+
+    /* Clean Executive App Background */
+    .stApp {
+        background: radial-gradient(circle at top right, rgba(14, 165, 233, 0.08), transparent 45%),
+                    radial-gradient(circle at bottom left, rgba(29, 78, 216, 0.06), transparent 45%),
+                    linear-gradient(180deg, #F8FAFC 0%, #EEF4FF 100%);
+    }
+
+    @keyframes pulseGlow {
+        0% { box-shadow: 0 6px 20px rgba(15, 42, 74, 0.16); }
+        50% { box-shadow: 0 8px 26px rgba(2, 132, 199, 0.25); }
+        100% { box-shadow: 0 6px 20px rgba(15, 42, 74, 0.16); }
+    }
+
+    .hero-banner {
+        background: linear-gradient(120deg, #0F2A4A 0%, #1D4ED8 55%, #0284C7 100%);
+        color: #FFFFFF;
+        padding: 18px 24px;
+        border-radius: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.25);
+        animation: pulseGlow 4s infinite ease-in-out;
+        margin-bottom: 10px;
+    }
+
+    .main-title { font-size: 26px; font-weight: 800; color: #FFFFFF; margin-bottom: 4px; letter-spacing: 0.3px; }
+    .sub-title { font-size: 14px; color: #E0F2FE; margin-bottom: 0px; }
+
+    /* Updated Oval Badge Matching PAMANA Navy & Sky Blue Theme */
+    .section-pill {
+        display: inline-block;
+        background: linear-gradient(90deg, #0F2A4A 0%, #1E40AF 55%, #0284C7 100%);
+        color: #FFFFFF;
+        font-weight: 700;
+        font-size: 12px;
+        padding: 5px 14px;
+        border-radius: 999px;
+        margin-bottom: 8px;
+        letter-spacing: 0.5px;
+        border: 1px solid rgba(186, 230, 253, 0.45);
+        box-shadow: 0 3px 10px rgba(15, 42, 74, 0.18);
+    }
+    
+    .stMetric { 
+        background: linear-gradient(145deg, #FFFFFF 0%, #F8FAFF 100%) !important; 
+        padding: 16px !important; 
+        border-radius: 14px !important; 
+        border: 1px solid #CBD5E1 !important;
+        border-top: 4px solid #0284C7 !important;
+        box-shadow: 0 4px 12px rgba(15, 42, 74, 0.06) !important;
+        transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+    }
+    .stMetric:hover {
+        transform: translateY(-4px) scale(1.015) !important;
+        border-color: #0284C7 !important;
+        border-top-color: #0F2A4A !important;
+        box-shadow: 0 8px 22px rgba(2, 132, 199, 0.22) !important;
+    }
+    
+    .role-badge { 
+        background: linear-gradient(135deg, #0284C7 0%, #1E40AF 100%); 
+        color: white; 
+        padding: 5px 12px; 
+        border-radius: 20px; 
+        font-size: 12px; 
+        font-weight: 700;
+        display: inline-block;
+        box-shadow: 0 2px 8px rgba(30, 64, 175, 0.3);
+    }
+    
+    section[data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0B1F3A 0%, #0F2A4A 60%, #163A63 100%) !important;
+        color: #FFFFFF !important;
+    }
+    section[data-testid="stSidebar"] .stMarkdown, 
+    section[data-testid="stSidebar"] label,
+    section[data-testid="stSidebar"] .stRadio label {
+        color: #E2E8F0 !important;
+    }
+    
+    /* Brighter, Crisp Executive Buttons */
+    div.stButton > button, 
+    div.stFormSubmitButton > button,
+    .stSidebar div.stButton > button {
+        background: linear-gradient(135deg, #FFFFFF 0%, #E0F2FE 55%, #BAE6FD 100%) !important;
+        color: #0B1F3A !important;
+        font-weight: 800 !important;
+        border-radius: 10px !important;
+        border: 1.5px solid #0284C7 !important;
+        padding: 8px 20px !important;
+        transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+        box-shadow: 0 3px 10px rgba(2, 132, 199, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.9) !important;
+    }
+    
+    div.stButton > button:hover, 
+    div.stFormSubmitButton > button:hover,
+    .stSidebar div.stButton > button:hover {
+        background: linear-gradient(135deg, #FFFFFF 0%, #F0F9FF 50%, #7DD3FC 100%) !important;
+        color: #082F49 !important;
+        border-color: #0369A1 !important;
+        box-shadow: 0 0 18px rgba(14, 165, 233, 0.55), 0 4px 12px rgba(2, 132, 199, 0.28) !important;
+        transform: translateY(-2px) scale(1.015) !important;
+    }
+    
+    div.stButton > button:active, 
+    div.stFormSubmitButton > button:active,
+    .stSidebar div.stButton > button:active {
+        background: linear-gradient(135deg, #BAE6FD 0%, #7DD3FC 100%) !important;
+        transform: translateY(1px) scale(0.99) !important;
+    }
+    
+    .active-user-card {
+        background: linear-gradient(90deg, #FFFFFF 0%, #F0F9FF 100%);
+        border-left: 4px solid #0284C7;
+        padding: 12px 16px;
+        border-radius: 10px;
+        margin-bottom: 8px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+        transition: all 0.3s ease;
+    }
+    .active-user-card:hover {
+        transform: translateX(4px);
+        box-shadow: 0 0 12px rgba(2, 132, 199, 0.25);
+    }
+    </style>
+""",
+    unsafe_allow_html=True,
+)
+
+# ---------------------------------------------------------
+# DATA PRIVACY ACT (RA 10173) AUTOMATIC POP-UP MODAL
+# ---------------------------------------------------------
+if "privacy_accepted" not in st.session_state:
+    st.session_state["privacy_accepted"] = False
+
+if hasattr(st, "dialog"):
+
+    @st.dialog("🔒 DATA PRIVACY ACT COMPLIANCE REMINDER (RA 10173)")
+    def privacy_modal():
+        st.markdown("""
+        **DSWD FIELD OFFICE X • PAMANA PEACE & DEVELOPMENT PROGRAM**
+        
+        Pursuant to **Republic Act No. 10173 (Data Privacy Act of 2012)**:
+        
+        1. **Authorized Access Only:** This system contains official program records, CEAC activity logs, and financial disbursements.
+        2. **Confidentiality Notice:** Any unauthorized extraction, downloading, or distribution of internal records is strictly prohibited.
+        3. **Audit Trail:** All encoding sessions, file uploads, and data entries are timestamped and logged under registered user credentials.
+        """)
+        st.divider()
+        if st.button("✅ I Agree & Proceed to Portal", use_container_width=True):
+            st.session_state["privacy_accepted"] = True
+            st.rerun()
+
+    if not st.session_state["privacy_accepted"]:
+        privacy_modal()
+
+def generate_random_password(length=10):
+    chars = string.ascii_letters + string.digits + "@#$%"
+    return "".join(secrets.choice(chars) for _ in range(length))
+
 def is_temp_pass_expired(req_change_flag, temp_created_val):
     """Checks if a temporary password (require_change_pass == 1) is past TEMP_PASS_EXPIRY_HOURS."""
     if not req_change_flag:
@@ -65,266 +384,57 @@ def is_temp_pass_expired(req_change_flag, temp_created_val):
     except Exception:
         return False
 
-# ==========================================
-# 1. PAGE CONFIGURATION & STYLING
-# ==========================================
-st.set_page_config(
-    page_title="PDBBM SCMS Beneficiary Management System",
-    page_icon="🕊️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# ---------------------------------------------------------
-# CUSTOM GLOW ANIMATIONS, LIGHT GRADIENT BG & CONTRAST STYLING
-# ---------------------------------------------------------
-st.markdown("""
-    <style>
-    /* Keep Header transparent so Sidebar Expand Arrow & 3-Dots Menu remain accessible */
-    header[data-testid="stHeader"] {
-        background: transparent !important;
-        visibility: visible !important;
-    }
-
-    /* Ensure Sidebar Expand/Collapse Arrow is always visible and clickable */
-    div[data-testid="stSidebarCollapsedControl"],
-    button[data-testid="stExpandSidebarButton"],
-    button[data-testid="stBaseButton-headerNoPadding"] {
-        visibility: visible !important;
-        display: flex !important;
-        z-index: 999999 !important;
-    }
-
-    /* Hide Streamlit Cloud "Fork" & GitHub action buttons in header while keeping the 3-dots menu */
-    [data-testid="stToolbar"],
-    [data-testid="stActionButton"],
-    .stAppActionButton,
-    header[data-testid="stHeader"] a[href*="github.com"],
-    header[data-testid="stHeader"] button:not(#MainMenu):not([data-testid="stBaseButton-headerNoPadding"]):not([data-testid="stExpandSidebarButton"]) {
-        display: none !important;
-        visibility: hidden !important;
-    }
-
-    /* Keep MainMenu (⋮) 3 dots visible */
-    #MainMenu,
-    #MainMenu > button {
-        visibility: visible !important;
-        display: inline-flex !important;
-    }
-
-    footer { visibility: hidden !important; display: none !important; }
-    .stAppDeployButton { display: none !important; }
-
-    /* Light Gradient Whole Background */
-    .stApp,
-    [data-testid="stAppViewContainer"] {
-        background: radial-gradient(circle at top right, rgba(14, 165, 233, 0.12), transparent 45%),
-                    radial-gradient(circle at bottom left, rgba(59, 130, 246, 0.10), transparent 45%),
-                    linear-gradient(135deg, #F8FAFC 0%, #EFF6FF 50%, #E0F2FE 100%) !important;
-        color: #0F172A !important;
-    }
-
-    .dialect-box {
-        background-color: rgba(255, 255, 255, 0.92);
-        border: 1px solid #CBD5E1;
-        border-radius: 8px;
-        padding: 12px;
-        margin-bottom: 10px;
-        transition: all 0.3s ease;
-    }
-    .dialect-box:hover {
-        box-shadow: 0 0 12px rgba(2, 132, 199, 0.2);
-        border-color: #0284C7;
-    }
-
-    /* METRIC CARDS GLOW & HOVER ANIMATION */
-    div[data-testid="stMetric"] {
-        background: linear-gradient(145deg, #FFFFFF 0%, #F0F9FF 100%) !important;
-        border: 1px solid #CBD5E1 !important;
-        border-radius: 14px !important;
-        padding: 16px !important;
-        box-shadow: 0 4px 12px rgba(15, 42, 74, 0.05) !important;
-        transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
-        cursor: pointer !important;
-    }
-    div[data-testid="stMetric"]:hover {
-        transform: translateY(-4px) scale(1.02) !important;
-        border-color: #E11D48 !important;
-        box-shadow: 0 0 18px rgba(225, 29, 72, 0.45), 0 0 28px rgba(225, 29, 72, 0.2) !important;
-    }
-    div[data-testid="stMetric"] label {
-        font-size: 12px !important;
-        font-weight: 700 !important;
-        text-transform: uppercase;
-        color: #1E293B !important;
-    }
-    div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
-        color: #0284C7 !important;
-        font-weight: 800 !important;
-        font-size: 24px !important;
-    }
-
-    /* HIGH-CONTRAST SIDEBAR STYLING & RADIO/HOVER CLARITY */
-    section[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #0B1F3A 0%, #0F2A4A 60%, #163A63 100%) !important;
-        color: #F8FAFC !important;
-    }
-    section[data-testid="stSidebar"] .stMarkdown,
-    section[data-testid="stSidebar"] .stMarkdown p,
-    section[data-testid="stSidebar"] .stMarkdown span,
-    section[data-testid="stSidebar"] .stMarkdown h1,
-    section[data-testid="stSidebar"] .stMarkdown h2,
-    section[data-testid="stSidebar"] .stMarkdown h3,
-    section[data-testid="stSidebar"] label,
-    section[data-testid="stSidebar"] .stCaption {
-        color: #F8FAFC !important;
-        opacity: 1 !important;
-    }
-    section[data-testid="stSidebar"] [data-testid="stRadio"] label,
-    section[data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] label,
-    section[data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] label * {
-        color: #F8FAFC !important;
-        opacity: 1 !important;
-        font-weight: 600 !important;
-    }
-    section[data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] label:hover,
-    section[data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] label:hover * {
-        color: #FFFFFF !important;
-        background-color: rgba(56, 189, 248, 0.24) !important;
-        border-radius: 8px !important;
-        opacity: 1 !important;
-    }
-    section[data-testid="stSidebar"] [data-testid="stRadio"] input[type="radio"] {
-        accent-color: #38BDF8 !important;
-        opacity: 1 !important;
-    }
-
-    /* UNIFIED BUTTON ANIMATIONS & RED GLOW EFFECTS */
-    div.stButton > button, 
-    div.stDownloadButton > button,
-    div.stFormSubmitButton > button,
-    .stSidebar div.stButton > button {
-        background: linear-gradient(135deg, #FFFFFF 0%, #E2E8F0 100%) !important;
-        color: #0F172A !important;
-        font-weight: bold !important;
-        border-radius: 8px !important;
-        border: 1px solid #94A3B8 !important;
-        padding: 8px 20px !important;
-        transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.06) !important;
-    }
-    
-    div.stButton > button:hover, 
-    div.stDownloadButton > button:hover,
-    div.stFormSubmitButton > button:hover,
-    .stSidebar div.stButton > button:hover {
-        background: #FFFFFF !important;
-        color: #E11D48 !important;
-        border-color: #E11D48 !important;
-        box-shadow: 0 0 15px rgba(225, 29, 72, 0.6), 0 0 25px rgba(225, 29, 72, 0.3) !important;
-        transform: translateY(-2px) scale(1.01) !important;
-    }
-    
-    div.stButton > button:active, 
-    div.stDownloadButton > button:active,
-    div.stFormSubmitButton > button:active,
-    .stSidebar div.stButton > button:active {
-        transform: translateY(1px) scale(0.99) !important;
-        box-shadow: 0 0 5px rgba(225, 29, 72, 0.4) !important;
-    }
-
-    .active-user-card {
-        background: linear-gradient(90deg, #FFFFFF 0%, #F0F9FF 100%);
-        border-left: 4px solid #10B981;
-        padding: 12px 16px;
-        border-radius: 8px;
-        margin-bottom: 8px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.04);
-        color: #0F172A !important;
-    }
-    .role-badge {
-        background: linear-gradient(135deg, #1F4E78 0%, #2B6CB0 100%);
-        color: white !important;
-        padding: 3px 10px;
-        border-radius: 12px;
-        font-size: 12px;
-        font-weight: 600;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-# ==========================================
-# DATA PRIVACY ACT (RA 10173) AUTOMATIC POP-UP MODAL
-# ==========================================
-if "privacy_accepted" not in st.session_state:
-    st.session_state["privacy_accepted"] = False
-
-if hasattr(st, "dialog"):
-    @st.dialog("🔒 DATA PRIVACY ACT COMPLIANCE REMINDER (RA 10173)")
-    def privacy_modal():
-        st.markdown("""
-        **DSWD FIELD OFFICE X • PDBBM SCMS BENEFICIARY MANAGEMENT SYSTEM**
-        
-        Pursuant to **Republic Act No. 10173 (Data Privacy Act of 2012)**:
-        
-        1. **Official Use Only:** All beneficiary information, profiling records, and family data processed in this portal strictly adhere to RA 10173 confidentiality standards.
-        2. **Confidentiality Notice:** Unlawful extraction, downloading, or unauthorized sharing of personal records is strictly prohibited.
-        3. **Security Standards:** All system interactions and encoding sessions are timestamped and logged for audit compliance.
-        """)
-        st.divider()
-        if st.button("✅ I Agree & Proceed to System", use_container_width=True):
-            st.session_state["privacy_accepted"] = True
-            st.rerun()
-
-    if not st.session_state["privacy_accepted"]:
-        privacy_modal()
-
-# ==========================================
-# 2. EMAIL SENDER HELPER (SECURED VIA st.secrets)
-# ==========================================
 def send_credentials_email(recipient_email, recipient_name, temp_password, user_role="User", is_otp=False):
     sender_email = st.secrets.get("EMAIL_SENDER", "lbidulsa.fo10@dswd.gov.ph")
     sender_password = st.secrets.get("EMAIL_PASSWORD", "")
-
-    if not sender_password:
-        return False, "EMAIL_PASSWORD secrets key is missing or blank in Streamlit Cloud."
+    system_link = "https://pdbbmpamanacdpd.streamlit.app/"
 
     try:
-        msg = MIMEMultipart('alternative')
-        msg['From'] = f"DSWD FO X PDBBM SCMS Portal <{sender_email}>"
-        msg['To'] = recipient_email
+        msg = MIMEMultipart("alternative")
+        msg["From"] = f"DSWD FO X PAMANA CDPD System <{sender_email}>"
+        msg["To"] = recipient_email
 
         if is_otp:
-            msg['Subject'] = "🔑 Password Reset OTP Code - PDBBM SCMS Portal"
-            intro_text = "We received a request to reset your password for the <b>PDBBM SCMS Beneficiary Management System</b>."
+            msg["Subject"] = "🔑 Password Reset OTP Code - PAMANA CDPD Portal"
+            intro_text = "We received a request to reset your password for the <b>PAMANA Peace & Development Management System</b>."
             details_block = f"""
                 <p style="margin: 5px 0;"><b>Login Email:</b> <code style="font-size: 1.1em; color: #1F4E78;">{recipient_email}</code></p>
                 <p style="margin: 5px 0;"><b>6-Digit Reset OTP Code:</b> <code style="font-size: 1.4em; color: #C53030; font-weight: bold;">{temp_password}</code></p>
                 <p style="margin: 8px 0 0 0; color: #C53030; font-weight: bold;">⏳ Note: This OTP will expire in 2 minutes.</p>
             """
-            security_notice = "<b>Security Notice:</b> Enter this 6-digit OTP in the Password Reset tab within <b>2 minutes</b>. If you did not request a password reset, please ignore this email."
+            security_notice = "<b>Security Notice:</b> Your OTP will expire in <b>2 minutes</b>. Enter this 6-digit OTP in the Password Reset tab before it expires. If you did not request a password reset, please ignore this email."
         else:
-            msg['Subject'] = "🔒 Official Account Credentials - PDBBM SCMS Portal"
-            intro_text = "Your official user account for the <b>PDBBM SCMS Beneficiary Management System</b> has been successfully configured."
+            msg["Subject"] = "🔒 Official Account Credentials - PAMANA CDPD Portal"
+            intro_text = "Your official user account for the <b>PAMANA Peace & Development Management System</b> has been successfully configured."
             details_block = f"""
                 <p style="margin: 5px 0;"><b>Login Email:</b> <code style="font-size: 1.1em; color: #1F4E78;">{recipient_email}</code></p>
                 <p style="margin: 5px 0;"><b>Assigned Role:</b> {user_role}</p>
                 <p style="margin: 5px 0;"><b>Temporary Password:</b> <code style="font-size: 1.2em; color: #C53030; font-weight: bold;">{temp_password}</code></p>
                 <p style="margin: 8px 0 0 0; color: #C53030; font-weight: bold;">⏳ Note: This temporary password will expire in 24 hours.</p>
             """
-            security_notice = "<b>Security Notice:</b> Your temporary password will expire in <b>24 hours</b>. Please login to the PDBBM SCMS Portal and change your temporary password before it expires."
-        
+            security_notice = "<b>Security Notice:</b> Your temporary password will expire in <b>24 hours</b>. Please login to the PAMANA CDPD Portal and change your temporary password before it expires."
+
         html_body = f"""
         <html>
           <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333333;">
             <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #1F4E78; border-radius: 8px;">
-              <h2 style="color: #1F4E78; text-align: center;">🕊️ DSWD Field Office X - PDBBM SCMS Portal</h2>
+              <h2 style="color: #1F4E78; text-align: center;">🕊️ DSWD Field Office X - PAMANA CDPD System</h2>
               <hr style="border: 0; border-top: 1px solid #1F4E78;">
               <p>Dear <b>{recipient_name}</b>,</p>
               <p>{intro_text}</p>
               
               <div style="background-color: #F4F6F9; padding: 15px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #1F4E78;">
                 {details_block}
+              </div>
+
+              <div style="text-align: center; margin: 25px 0;">
+                <a href="{system_link}" target="_blank" style="background-color: #1F4E78; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; font-size: 14px;">
+                  🚀 Click Here to Access System Portal
+                </a>
+                <p style="font-size: 0.85em; color: #5A6A85; margin-top: 8px;">
+                  Or copy and paste this link to your browser:<br>
+                  <a href="{system_link}" style="color: #1F4E78;">{system_link}</a>
+                </p>
               </div>
 
               <p>{security_notice}</p>
@@ -337,41 +447,71 @@ def send_credentials_email(recipient_email, recipient_name, temp_password, user_
           </body>
         </html>
         """
-        msg.attach(MIMEText(html_body, 'html'))
-        
-        smtp_server = st.secrets.get("SMTP_SERVER", "smtp.gmail.com")
-        
-        success = False
-        last_err = ""
+        msg.attach(MIMEText(html_body, "html"))
 
-        try:
-            with smtplib.SMTP(smtp_server, 587, timeout=20) as server:
-                server.ehlo()
-                server.starttls()
-                server.ehlo()
-                server.login(sender_email, sender_password)
-                server.send_message(msg)
-                success = True
-        except Exception as e1:
-            last_err = str(e1)
-            try:
-                with smtplib.SMTP_SSL(smtp_server, 465, timeout=20) as server:
-                    server.login(sender_email, sender_password)
-                    server.send_message(msg)
-                    success = True
-            except Exception as e2:
-                last_err = f"TLS Error: {e1} | SSL Error: {e2}"
-
-        if success:
-            return True, "Email sent successfully!"
-        else:
-            return False, f"Connection failed: {last_err}" 
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(sender_email, sender_password)
+        server.send_message(msg)
+        server.quit()
+        return True, "Email sent successfully!"
     except Exception as e:
         return False, str(e)
 
-# ==========================================
-# 3. DATABASE CONNECTION ENGINE (READS FROM ST.SECRETS)
-# ==========================================
+def get_logo_path():
+    if os.path.exists("logo.png"):
+        return "logo.png"
+    elif os.path.exists("Peace and Dev LOGO.jpg"):
+        return "Peace and Dev LOGO.jpg"
+    return None
+
+logo_file = get_logo_path()
+
+os.makedirs("uploaded_movs", exist_ok=True)
+os.makedirs("uploaded_photos", exist_ok=True)
+
+def extract_gps_from_image(image_file):
+    try:
+        img = Image.open(image_file)
+        exif = img._getexif()
+        if not exif:
+            return None, None
+
+        geotagging = {}
+        for idx, tag in ExifTags.TAGS.items():
+            if tag == "GPSInfo":
+                if idx not in exif:
+                    return None, None
+                for key, val in ExifTags.GPSTAGS.items():
+                    if key in exif[idx]:
+                        geotagging[val] = exif[idx][key]
+
+        if not geotagging:
+            return None, None
+
+        def convert_to_degrees(value):
+            d = float(value[0])
+            m = float(value[1])
+            s = float(value[2])
+            return d + (m / 60.0) + (s / 3600.0)
+
+        lat = convert_to_degrees(geotagging["GPSLatitude"])
+        if geotagging["GPSLatitudeRef"] != "N":
+            lat = -lat
+
+        lon = convert_to_degrees(geotagging["GPSLongitude"])
+        if geotagging["GPSLongitudeRef"] != "E":
+            lon = -lon
+
+        return str(round(lat, 6)), str(round(lon, 6))
+    except Exception:
+        return None, None
+
+# ---------------------------------------------------------
+# 1. CENTRALIZED SUPABASE CLOUD DATABASE INITIALIZATION
+# ---------------------------------------------------------
+DEFAULT_DB_URL = ""
+
 @st.cache_resource
 def get_db_engine():
     try:
@@ -382,177 +522,141 @@ def get_db_engine():
         else:
             db_url = st.secrets.get("SUPABASE_URL", "")
     except Exception:
-        db_url = ""
-    return create_engine(db_url, pool_pre_ping=True, pool_size=10, max_overflow=20, pool_recycle=300)
+        db_url = "" 
+    return create_engine(
+        db_url,
+        pool_pre_ping=True,
+        pool_size=10,
+        max_overflow=20,
+        pool_recycle=300
+    )
 
 engine = get_db_engine()
 
-# Auto-sync, ensure database tables exist & PURGE ARCHIVE > 30 DAYS
+def load_db_table(table_name):
+    try:
+        return pd.read_sql_query(f"SELECT * FROM {table_name}", engine)
+    except Exception:
+        return pd.DataFrame()
+
+# AUTO-SYNC SCHEMA FOR NEW MOV OTHER/S, TEMP PASS EXPIRY, DELETE REQUESTS, 30-DAY ARCHIVE & MOV VAULT
 try:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS last_login TIMESTAMP WITH TIME ZONE;"))
         conn.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS temp_pass_created_at TIMESTAMP WITH TIME ZONE;"))
+        conn.execute(text("ALTER TABLE geotagged_photos ADD COLUMN IF NOT EXISTS image_base64 TEXT;"))
+        conn.execute(text("ALTER TABLE ceac_barangay ADD COLUMN IF NOT EXISTS mov_other_files TEXT;"))
+        conn.execute(text("ALTER TABLE ceac_municipal ADD COLUMN IF NOT EXISTS mov_other_files TEXT;"))
         conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS deleted_cases_archive (
-                archive_id SERIAL PRIMARY KEY,
-                original_case_id INT,
-                control_no VARCHAR(255),
-                client_name VARCHAR(255),
-                requested_by VARCHAR(255),
-                deletion_reason TEXT,
-                deleted_by VARCHAR(255),
-                archived_at VARCHAR(255),
-                raw_case_data_json TEXT
+            CREATE TABLE IF NOT EXISTS mov_file_vault (
+                id SERIAL PRIMARY KEY,
+                filename VARCHAR(512) UNIQUE NOT NULL,
+                mime_type VARCHAR(150),
+                file_base64 TEXT NOT NULL,
+                uploaded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         """))
         conn.execute(text("""
-            DELETE FROM deleted_cases_archive 
-            WHERE TO_TIMESTAMP(archived_at, 'YYYY-MM-DD HH24:MI:SS') < NOW() - INTERVAL '30 days'
+            CREATE TABLE IF NOT EXISTS deletion_requests (
+                id SERIAL PRIMARY KEY,
+                source_table VARCHAR(100) NOT NULL,
+                record_id BIGINT NOT NULL,
+                record_summary TEXT,
+                record_payload TEXT NOT NULL,
+                requested_by VARCHAR(255) NOT NULL,
+                requester_role VARCHAR(50),
+                reason TEXT,
+                status VARCHAR(30) DEFAULT 'Pending',
+                reviewed_by VARCHAR(255),
+                reviewed_at TIMESTAMP WITH TIME ZONE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
         """))
-        conn.execute(text("UPDATE deletion_requests SET status = 'APPROVED' WHERE status = 'PENDING' AND case_id NOT IN (SELECT id FROM cases)"))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS archived_records (
+                id SERIAL PRIMARY KEY,
+                source_table VARCHAR(100) NOT NULL,
+                original_record_id BIGINT NOT NULL,
+                record_summary TEXT,
+                record_payload TEXT NOT NULL,
+                requested_by VARCHAR(255),
+                approved_by VARCHAR(255),
+                archived_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                auto_purge_at TIMESTAMP WITH TIME ZONE NOT NULL
+            );
+        """))
 except Exception:
     pass
 
-def generate_random_password(length=10):
-    chars = string.ascii_letters + string.digits + "@#$%"
-    return ''.join(secrets.choice(chars) for _ in range(length))
-
-if "authenticated" not in st.session_state:
-    st.session_state["authenticated"] = False
-if "user_info" not in st.session_state:
-    st.session_state["user_info"] = {}
-if "autofill_data" not in st.session_state:
-    st.session_state["autofill_data"] = {}
-if "redirect_to_module" not in st.session_state:
-    st.session_state["redirect_to_module"] = None
+# ---------------------------------------------------------
+# 2. LOGIN PORTAL & FORGOT/RESET PASSWORD
+# ---------------------------------------------------------
+if "logged_in" not in st.session_state:
+    st.session_state["logged_in"] = False
+    st.session_state["user_email"] = None
+    st.session_state["user_role"] = None
+    st.session_state["user_name"] = None
+    st.session_state["must_change_pass"] = False
 
 if "reset_otp" not in st.session_state:
     st.session_state["reset_otp"] = None
     st.session_state["reset_user_email"] = None
 
-def export_to_excel_bytes(df):
-    output = BytesIO()
-    try:
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Report_Data')
-    except Exception:
-        output.write(df.to_csv(index=False).encode('utf-8'))
-    return output.getvalue()
+def login():
+    st.markdown("<br>", unsafe_allow_html=True)
+    c_left, c_center, c_right = st.columns([1, 2, 1])
 
-def render_sidebar_logo():
-    if os.path.exists("logo.png"):
-        st.image("logo.png", width=260)
-    elif os.path.exists("Peace and Dev LOGO.jpg"):
-        st.image("Peace and Dev LOGO.jpg", width=220)
-    else:
-        st.markdown("## 🕊️ **DSWD FIELD OFFICE X**")
+    with c_center:
+        if logo_file:
+            l_col1, l_col2, l_col3 = st.columns([1, 3, 1])
+            with l_col2:
+                st.image(logo_file, use_container_width=True)
 
-def render_header_logo(width=500):
-    if os.path.exists("logo.png"):
-        st.image("logo.png", width=width)
-    elif os.path.exists("Peace and Dev LOGO.jpg"):
-        st.image("Peace and Dev LOGO.jpg", width=width)
-    else:
-        st.markdown("## 🕊️ **DSWD FIELD OFFICE X**")
+        st.markdown("<h2 style='text-align: center; color: #1F4E78; margin-top: 10px;'>🕊️ PAMANA CDPD System</h2>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: #5A6A85;'>Peace and Development Executive Management Portal</p>", unsafe_allow_html=True)
 
-def render_main_header_logo(width=160):
-    """Circle Peace & Dev Logo strictly for Main Page Header"""
-    if os.path.exists("Peace and Dev LOGO.jpg"):
-        st.image("Peace and Dev LOGO.jpg", width=width)
-    elif os.path.exists("logo.png"):
-        st.image("logo.png", width=width)
-    else:
-        st.markdown("## 🕊️ **DSWD FIELD OFFICE X**")
-
-def parse_date_str(date_str, default_date=date(1995, 1, 1)):
-    if not date_str or str(date_str) == "None":
-        return default_date
-    try:
-        return datetime.datetime.strptime(str(date_str).strip(), "%Y-%m-%d").date()
-    except Exception:
-        try:
-            return datetime.datetime.strptime(str(date_str).strip(), "%m-%d-%Y").date()
-        except Exception:
-            return default_date
-
-# LIST OF OFFICIAL DIALECTS FROM GIS FORM PAGE 1
-DIALECTS_LIST_1 = ["English", "Tagalog", "Bikol", "Cebuano", "Hiligaynon", "Ilokano", "Kagan", "Pampango", "Iranun"]
-DIALECTS_LIST_2 = ["Pangasinense", "Waray", "Chavacano", "Maranao", "Mindanaoan", "Tausūg", "Yakan"]
-
-# EXCLUDED CDPD ACCOUNTS LIST FOR USER MANAGEMENT & SCMS LIVE MONITOR
-EXCLUDED_CDPD_EMAILS = (
-    "llgatabon.fo10@dswd.gov.ph", 
-    "djlwaniwan.fo10@dswd.gov.ph", 
-    "stepcelo@gmail.com",
-    "paulicanjuvie0@gmail.com",
-    "ryandswdfox1002@gmail.com",
-    "magierooth@gmail.com",
-    "evascojr.antonio@gmail.com",
-    "michaeljudaya75@gmail.com",
-    "nelsongumahadjr@gmail.com",
-    "nathaniel.felicilda@gmail.com",
-    "esyduhaylunsod14@gmail.com",
-    "esylduhaylunsod14@gmail.com",
-    "amernasif6@gmail.com",
-    "aj.alentajan16@gmail.com"
-)
-
-# ==========================================
-# 4. LOGIN PORTAL & FORGOT/RESET PASSWORD
-# ==========================================
-if not st.session_state["authenticated"] or not st.session_state.get("user_info"):
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        render_header_logo(width=500)
-        st.title("🏛️ PDBBM SCMS Login Portal")
-        st.markdown("##### **Peace and Development: Buong Bansa Mapayapa - SCMS Beneficiary Management System**")
-        st.caption("Authorized Field Personnel & Case Managers Registry")
-        st.divider()
-        
         auth_tab1, auth_tab2 = st.tabs(["🔑 Login Portal", "🔓 Forgot / Reset Password"])
-        
+
         with auth_tab1:
-            with st.form("login_form", clear_on_submit=False):
-                login_email = st.text_input("User Email Address").strip()
+            with st.form("login_form"):
+                login_email = st.text_input("Email Address").strip()
                 login_pass = st.text_input("Password", type="password").strip()
-                login_submitted = st.form_submit_button("🔒 Login to System", use_container_width=True)
-                
-                if login_submitted:
-                    try:
-                        with engine.connect() as conn:
-                            user_res = conn.execute(
-                                text("SELECT id, first_name, last_name, province, user_role, email, require_change_pass, temp_pass_created_at FROM user_accounts WHERE lower(trim(email)) = lower(trim(:e)) AND trim(password) = trim(:p)"),
-                                {"e": login_email, "p": login_pass}
-                            ).fetchone()
-                    except Exception:
-                        user_res = None
-                    
-                    if user_res:
-                        if is_temp_pass_expired(bool(user_res[6]), user_res[7]):
+                submit = st.form_submit_button("🔑 Login to Dashboard", use_container_width=True)
+
+                if submit:
+                    with engine.connect() as conn:
+                        res = conn.execute(
+                            text("SELECT id, full_name, email, password, user_role, require_change_pass, temp_pass_created_at FROM user_accounts WHERE lower(trim(email)) = lower(trim(:email)) AND trim(password) = trim(:password)"),
+                            {"email": login_email, "password": login_pass},
+                        ).fetchone()
+
+                    if res:
+                        if is_temp_pass_expired(bool(res[5]), res[6]):
                             st.error("⏰ Temporary password has EXPIRED (24-hour limit reached). Please use Forgot / Reset Password or contact Admin.")
                         else:
-                            st.session_state["authenticated"] = True
-                            st.session_state["user_info"] = {
-                                "id": user_res[0],
-                                "name": f"{user_res[1]} {user_res[2]}",
-                                "province": user_res[3],
-                                "role": user_res[4],
-                                "email": user_res[5],
-                                "must_change_pass": bool(user_res[6])
-                            }
+                            display_name = (
+                                res[1] if (res[1] and str(res[1]).strip() != "" and str(res[1]).lower() != "none") else res[2]
+                            )
+
+                            st.session_state["logged_in"] = True
+                            st.session_state["user_email"] = res[2]
+                            st.session_state["user_role"] = res[4]
+                            st.session_state["user_name"] = display_name
+                            st.session_state["must_change_pass"] = bool(res[5])
+
                             try:
                                 ph_now = get_ph_time()
                                 with engine.begin() as conn_up:
-                                    conn_up.execute(text("UPDATE user_accounts SET last_login = :ll WHERE id = :uid"), {"ll": ph_now, "uid": user_res[0]})
+                                    conn_up.execute(text("UPDATE user_accounts SET last_login = :ll WHERE id = :uid"), {"ll": ph_now, "uid": res[0]})
                             except Exception:
                                 pass
-                            
-                            st.toast(f"Welcome back, {user_res[1]}!", icon="👋")
-                            st.success(f"✅ Welcome {user_res[1]}!")
+
+                            st.toast(f"Welcome back, {display_name}!", icon="👋")
+                            st.success(f"Welcome back, {display_name}!")
                             st.rerun()
                     else:
-                        st.error("❌ Invalid Email Address or Password.")
-                        
+                        st.error("Invalid Email Address or Password!")
+
         with auth_tab2:
             st.markdown("##### 🔑 Request Password Reset Verification Code")
             reset_email = st.text_input("Enter Registered Email Address:")
@@ -560,21 +664,21 @@ if not st.session_state["authenticated"] or not st.session_state.get("user_info"
             if st.button("📩 Send Code via Email", use_container_width=True):
                 with engine.connect() as conn:
                     found_user = conn.execute(
-                        text("SELECT first_name, last_name, email, user_role FROM user_accounts WHERE lower(email) = lower(:email)"),
+                        text("SELECT full_name, email, user_role FROM user_accounts WHERE lower(email) = lower(:email)"),
                         {"email": reset_email.strip()},
                     ).fetchone()
 
                 if found_user:
                     otp = "".join(random.choices(string.digits, k=6))
                     st.session_state["reset_otp"] = otp
-                    st.session_state["reset_user_email"] = found_user[2]
+                    st.session_state["reset_user_email"] = found_user[1]
                     st.session_state["reset_otp_time"] = datetime.datetime.now()
 
-                    target_name = f"{found_user[0]} {found_user[1]}"
-                    sent_ok, msg_res = send_credentials_email(found_user[2], target_name, otp, found_user[3], is_otp=True)
+                    target_name = found_user[0] if (found_user[0] and str(found_user[0]).lower() != "none") else found_user[1]
+                    sent_ok, msg_res = send_credentials_email(found_user[1], target_name, otp, found_user[2], is_otp=True)
                     if sent_ok:
                         st.toast("Verification code sent!", icon="📩")
-                        st.success(f"📩 Reset Verification Code has been dispatched directly to {found_user[2]}! (OTP will expire in 2 minutes)")
+                        st.success(f"📩 Reset Verification Code has been dispatched directly to {found_user[1]}! (OTP will expire in 2 minutes)")
                     else:
                         st.error(f"❌ Email dispatch failed: {msg_res}. Please check system logs or contact Admin.")
                 else:
@@ -616,1220 +720,838 @@ if not st.session_state["authenticated"] or not st.session_state.get("user_info"
                     else:
                         st.error("Invalid OTP Code provided!")
 
+if not st.session_state["logged_in"]:
+    login()
     st.stop()
 
-# ==========================================
-# MANDATORY FIRST-LOGIN PASSWORD CHANGE MODAL
-# ==========================================
-if st.session_state.get("user_info", {}).get("must_change_pass"):
+# ---------------------------------------------------------
+# MANDATORY FIRST-LOGIN CHANGE PASSWORD MODAL
+# ---------------------------------------------------------
+if st.session_state.get("must_change_pass"):
     if hasattr(st, "dialog"):
+
         @st.dialog("🔑 MANDATORY PASSWORD CHANGE REQUIRED")
-        def mandatory_change_password_modal():
+        def change_password_modal():
             st.warning("⚠️ You are currently using a temporary password. Please configure your new custom password to proceed.")
-            with st.form("must_change_pass_form_scms"):
+            with st.form("must_change_pass_form"):
                 new_p1 = st.text_input("New Password*", type="password")
                 new_p2 = st.text_input("Confirm New Password*", type="password")
                 submit_chg = st.form_submit_button("💾 Save & Proceed to System", use_container_width=True)
-                
+
                 if submit_chg:
                     if new_p1 and new_p1 == new_p2:
-                        u_email_curr = st.session_state["user_info"]["email"]
                         with engine.begin() as conn:
                             conn.execute(
                                 text("UPDATE user_accounts SET password = :p, require_change_pass = 0, temp_pass_created_at = NULL WHERE lower(email) = lower(:e)"),
-                                {"p": new_p1, "e": u_email_curr}
+                                {"p": new_p1, "e": st.session_state["user_email"]},
                             )
-                        st.session_state["user_info"]["must_change_pass"] = False
+                        st.session_state["must_change_pass"] = False
                         st.toast("Password changed successfully!", icon="✅")
                         st.success("✅ Password changed successfully!")
                         st.rerun()
                     else:
                         st.error("⚠️ Passwords do not match or field is empty.")
-        mandatory_change_password_modal()
+
+        change_password_modal()
         st.stop()
 
-# ==========================================
-# 5. USER SESSION & SIDEBAR NAVIGATION
-# ==========================================
-u_info = st.session_state.get("user_info", {})
-user_role = u_info.get("role", "User")
-user_province = u_info.get("province", "RPMO")
-user_email = u_info.get("email", "")
-user_name = u_info.get("name", "User Account")
+# ---------------------------------------------------------
+# 3. GLOBAL CONFIGURATIONS, PERMISSIONS, MOV VIEWER & ARCHIVE HELPERS
+# ---------------------------------------------------------
+REGIONS = ["REGION X"]
+PROVINCES = ["Misamis Occidental", "Lanao del Norte"]
+MUNICIPALITIES = ["Oroquieta City", "Kauswagan"]
+CYCLE_BATCHES = ["Cycle 1 - 2026", "Cycle 2 - 2026", "Cycle 3 - 2026"]
+ENCODED_OPTIONS = ["YES", "NO"]
+CLOSEOUT_STATUSES = ["Pending", "In Progress", "Passed / Completed", "Failed / For Revision", "Closed / Booked", "N/A"]
+MOV_STATUSES = ["Completed & Uploaded", "Pending MOV", "For Review", "N/A"]
 
-PROVINCES_LIST = ["Misamis Oriental", "Misamis Occidental", "Bukidnon", "Lanao del Norte", "Lanao del Sur", "RPMO", "CO"]
-
-def get_beneficiary_options():
-    try:
-        if user_role in ["Superuser", "Admin"]:
-            query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email, profile_status FROM cases ORDER BY id DESC")
-            df_c = pd.read_sql_query(query, engine)
-        elif user_role == "Team Leader":
-            query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email, profile_status FROM cases WHERE lower(province) = lower(:p) ORDER BY id DESC")
-            df_c = pd.read_sql_query(query, engine, params={"p": user_province})
-        else:
-            query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email, profile_status FROM cases WHERE lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e) ORDER BY id DESC")
-            df_c = pd.read_sql_query(query, engine, params={"e": user_email})
-    except Exception:
-        if user_role in ["Superuser", "Admin"]:
-            query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases ORDER BY id DESC")
-            df_c = pd.read_sql_query(query, engine)
-        elif user_role == "Team Leader":
-            query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(province) = lower(:p) ORDER BY id DESC")
-            df_c = pd.read_sql_query(query, engine, params={"p": user_province})
-        else:
-            query = text("SELECT id, client_id, control_no, last_name, first_name, province, staff_email FROM cases WHERE lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e) ORDER BY id DESC")
-            df_c = pd.read_sql_query(query, engine, params={"e": user_email})
-        
-    if not df_c.empty:
-        res = {}
-        for _, row in df_c.iterrows():
-            st_icon = "🟢" if str(row.get('profile_status', '')).lower() == 'completed' else "🟡"
-            lbl = f"{st_icon} ID #{row['id']} [HHID: {row['control_no'] or 'N/A'}]: {row['first_name']} {row['last_name']} ({row['province']})"
-            res[lbl] = row['id']
-        return res
-    return {}
-
-def get_client_record(case_id):
-    if not case_id:
-        return {}
-    try:
-        df = pd.read_sql_query(text("SELECT * FROM cases WHERE id = :id"), engine, params={"id": case_id})
-        if not df.empty:
-            return df.iloc[0].to_dict()
-    except Exception:
-        pass
-    return {}
-
-menu_options_list = [
-    "📊 Executive Dashboard", "👤 1. Personal & Profiling", "👨‍👩‍👧‍👦 2. Family & Health",
-    "📋 3. Prob & Assistance", "🏠 4. Infrastructure & Housing", "🌾 5. Agricultural Info",
-    "💼 6. Livelihood & Employment", "🧠 7. Psychosocial Support", "🎓 8. Capacity Building",
-    "📝 9. Assessment & Updates", "📊 Masterlist Database"
+MUNICIPAL_ACTIVITIES = [
+    "Municipal_Profile", "Municipal_Orientation", "1st_MDC_Meeting", "2nd_MDC_Meeting",
+    "2nd_BDC_Meeting", "PPDW", "Technical_Review", "Pre_Implementation_Training",
+    "OM", "MAR_CAR", "Sustainability_Planning_Workshop", "GRS Instake"
 ]
 
-if user_role == "Superuser":
-    menu_options_list.append("👥 User Management")
+BARANGAY_ACTIVITIES = [
+    "Brgy_Profile", "1st_BDC_Meeting", "BPSA", "1st_BA", "2nd_BDC_Meeting",
+    "BAR", "OM", "2nd_BA", "Grievance_Intake", "GRS_Installation_Checklist", "CV", "ERS"
+]
 
-default_menu_idx = 0
-if st.session_state.get("redirect_to_module"):
-    target_mod = st.session_state["redirect_to_module"]
-    for idx, opt in enumerate(menu_options_list):
-        if opt.startswith(target_mod):
-            default_menu_idx = idx
-            break
-    st.session_state["redirect_to_module"] = None
+ALL_TABS = [
+    "Executive Dashboard", "User Management Portal", "CEAC_Municipal", "CEAC_Barangay",
+    "Geotagged_Photos", "Disbursement", "Sub_Project_Closeout_Tracker", "SP_Profile", "Summary", "Finance",
+    "Data Extraction & Export", "Delete Requests & 30-Day Archive"
+]
 
-with st.sidebar:
-    render_sidebar_logo()
-    st.title("🏛️ PDBBM SCMS Portal")
-    st.caption("Peace & Development: Buong Bansa Mapayapa")
-    st.success(f"👤 **{user_name}**")
-    st.caption(f"🔑 Role: <span class='role-badge'>{user_role}</span> | 📍 Jurisdiction: **{user_province}**", unsafe_allow_html=True)
-    st.caption(f"📧 Email: `{user_email}`")
-    
+current_role = st.session_state.get("user_role", "AC")
+current_user_name = st.session_state.get("user_name", "")
+
+if current_role == "Superuser":
+    TABS = ALL_TABS
+else:
+    TABS = [tab for tab in ALL_TABS if tab not in ["User Management Portal", "Delete Requests & 30-Day Archive"]]
+
+def can_edit_module(role, module):
+    if role in ["Superuser", "Admin"]:
+        return True
+    elif role == "AC" and module in ["CEAC_Municipal", "CEAC_Barangay", "Sub_Project_Closeout_Tracker", "SP_Profile"]:
+        return True
+    elif role == "TF" and module in ["Geotagged_Photos", "Sub_Project_Closeout_Tracker", "SP_Profile"]:
+        return True
+    elif role == "MFA" and module == "Disbursement":
+        return True
+    elif role == "MDM" and module in ["CEAC_Municipal", "CEAC_Barangay"]:
+        return True
+    elif role == "CEF":
+        return False  # CEF is strictly View-Only across all modules
+    return False
+
+def get_record_owner(record_row):
+    if record_row is None:
+        return ""
+    for col in ["encoded_by", "encoder", "created_by"]:
+        if col in record_row and pd.notna(record_row.get(col)):
+            val = str(record_row.get(col) or "").strip()
+            if val:
+                return val
+    return ""
+
+def is_record_owner(record_row):
+    owner = get_record_owner(record_row)
+    return bool(owner and owner.lower() == str(current_user_name or "").strip().lower())
+
+def can_view_movs(role, record_row=None):
+    """Superuser, MDM, and the user who encoded the record (plus Admin) can view MOVs."""
+    if role in ["Superuser", "Admin", "MDM"]:
+        return True
+    if is_record_owner(record_row):
+        return True
+    return False
+
+def can_edit_record_row(role, module, record_row):
+    """Superuser can edit any record; Admin and other non-CEF users can edit their own entry (or permitted module)."""
+    if role == "Superuser":
+        return True
+    if role == "CEF":
+        return False
+    if is_record_owner(record_row):
+        return True
+    if role == "Admin":
+        return get_record_owner(record_row) == ""
+    return can_edit_module(role, module)
+
+def persist_mov_to_vault(filename, file_bytes, mime_type=""):
+    """Stores a Base64 copy of an MOV file in Supabase so it survives container restarts."""
+    if not filename or not file_bytes:
+        return
     try:
-        df_my_cnt = pd.read_sql_query(text("SELECT id FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e)"), engine, params={"e": user_email})
-        cnt_val = len(df_my_cnt)
+        b64_data = base64.b64encode(file_bytes).decode("utf-8")
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO mov_file_vault (filename, mime_type, file_base64, uploaded_at)
+                    VALUES (:fn, :mt, :b64, CURRENT_TIMESTAMP)
+                    ON CONFLICT (filename) DO UPDATE
+                    SET mime_type = EXCLUDED.mime_type,
+                        file_base64 = EXCLUDED.file_base64,
+                        uploaded_at = CURRENT_TIMESTAMP
+                """),
+                {"fn": filename, "mt": mime_type or "", "b64": b64_data},
+            )
     except Exception:
-        cnt_val = 0
-    st.info(f"📝 **Your Encoded Entries:** {cnt_val} Beneficiaries")
+        pass
 
-    if user_role in ["Superuser", "Admin"]:
+def get_mov_bytes_from_vault(filename):
+    """Retrieves raw file bytes from mov_file_vault if available, and restores to disk."""
+    if not filename:
+        return None
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT file_base64 FROM mov_file_vault WHERE filename = :fn ORDER BY id DESC LIMIT 1"),
+                {"fn": filename},
+            ).fetchone()
+        if row and row[0]:
+            raw_bytes = base64.b64decode(row[0])
+            try:
+                disk_path = os.path.join("uploaded_movs", filename)
+                with open(disk_path, "wb") as f:
+                    f.write(raw_bytes)
+            except Exception:
+                pass
+            return raw_bytes
+    except Exception:
+        pass
+    return None
+
+def save_uploaded_file(file_obj):
+    if file_obj is not None:
+        file_bytes = file_obj.getvalue()
+        file_path = os.path.join("uploaded_movs", file_obj.name)
+        with open(file_path, "wb") as f:
+            f.write(file_bytes)
+        persist_mov_to_vault(file_obj.name, file_bytes, getattr(file_obj, "type", ""))
+        return file_obj.name
+    return ""
+
+def save_multiple_files(files_list):
+    saved_names = []
+    if files_list:
+        for file_obj in files_list:
+            file_bytes = file_obj.getvalue()
+            file_path = os.path.join("uploaded_movs", file_obj.name)
+            with open(file_path, "wb") as f:
+                f.write(file_bytes)
+            persist_mov_to_vault(file_obj.name, file_bytes, getattr(file_obj, "type", ""))
+            saved_names.append(file_obj.name)
+    return ", ".join(saved_names)
+
+def parse_mov_filenames(raw_val):
+    if raw_val is None or pd.isna(raw_val):
+        return []
+    txt = str(raw_val).strip()
+    if not txt or txt.upper().startswith("N/A"):
+        return []
+    return [part.strip() for part in txt.split(",") if part.strip()]
+
+def render_pdf_pages_in_app(file_bytes: bytes, key_prefix: str, filename: str):
+    """Renders PDF pages directly inside Streamlit as images (no browser iframe/download needed)."""
+    if HAS_PDFIUM:
         try:
-            with engine.connect() as conn:
-                conn.execute(text("UPDATE deletion_requests SET status = 'APPROVED' WHERE status = 'PENDING' AND case_id NOT IN (SELECT id FROM cases)"))
-                pending_del_cnt = conn.execute(text("SELECT COUNT(*) FROM deletion_requests WHERE status = 'PENDING'")).fetchone()[0]
-            if pending_del_cnt > 0:
-                if st.button(f"🔔 Deletion Requests: {pending_del_cnt} Pending", use_container_width=True):
-                    st.session_state["redirect_to_module"] = "📊 Masterlist Database"
-                    st.session_state["target_tab_idx"] = 4
-                    st.rerun()
+            pdf = pdfium.PdfDocument(file_bytes)
+            total_pages = len(pdf)
+            st.caption(f"📄 In-App PDF Viewer • Total Pages: **{total_pages}**")
+
+            c_pg, c_zm = st.columns([2, 1])
+            with c_pg:
+                page_num = st.number_input(
+                    "Page Number",
+                    min_value=1,
+                    max_value=max(1, total_pages),
+                    value=1,
+                    step=1,
+                    key=f"pdf_pg_{key_prefix}_{filename}",
+                )
+            with c_zm:
+                scale = st.selectbox(
+                    "Zoom Scale",
+                    options=[1.0, 1.5, 2.0],
+                    index=1,
+                    format_func=lambda s: f"{int(s*100)}%",
+                    key=f"pdf_zm_{key_prefix}_{filename}",
+                )
+
+            page = pdf[int(page_num) - 1]
+            bitmap = page.render(scale=float(scale))
+            pil_img = bitmap.to_pil()
+            st.image(pil_img, caption=f"{filename} — Page {int(page_num)} of {total_pages}", use_container_width=True)
+            return
+        except Exception as ex:
+            st.warning(f"⚠️ Could not render PDF pages with pypdfium2: {ex}")
+
+    if HAS_ST_PDF_VIEWER:
+        try:
+            st_pdf_viewer(file_bytes, width=850, height=650)
+            return
         except Exception:
             pass
 
-    col_side_btn1, col_side_btn2 = st.sidebar.columns(2)
-    with col_side_btn1:
-        if st.button("🔄 Refresh Data", use_container_width=True):
-            st.cache_data.clear()
-            st.toast("🔄 System data refreshed successfully!", icon="✨")
-            st.rerun()
-    with col_side_btn2:
-        if st.button("🚪 Logout", use_container_width=True):
-            st.session_state["authenticated"] = False
-            st.session_state["user_info"] = {}
-            st.rerun()
-
-    with st.expander("🔑 Change My Password"):
-        with st.form("self_change_pass_scms"):
-            old_p = st.text_input("Current Password*", type="password")
-            new_p1 = st.text_input("New Password*", type="password")
-            new_p2 = st.text_input("Confirm New Password*", type="password")
-            if st.form_submit_button("Update Password", use_container_width=True):
-                if new_p1 == new_p2 and new_p1 != "":
-                    with engine.connect() as conn:
-                        res_p = conn.execute(text("SELECT password FROM user_accounts WHERE lower(email) = lower(:e)"), {"e": user_email}).fetchone()
-                    if res_p and res_p[0] == old_p:
-                        with engine.begin() as conn:
-                            conn.execute(text("UPDATE user_accounts SET password = :p, require_change_pass = 0, temp_pass_created_at = NULL WHERE lower(email) = lower(:e)"), {"p": new_p1, "e": user_email})
-                        st.toast("✅ Password updated successfully!", icon="🔑")
-                        st.success("✅ Password successfully updated!")
-                    else:
-                        st.error("❌ Incorrect current password.")
-                else:
-                    st.error("⚠️ Passwords do not match or empty.")
-        
-    st.divider()
-    menu_selection = st.radio("Navigation Menu:", menu_options_list, index=default_menu_idx)
-
-    st.divider()
-    st.markdown(
-        """
-        <div style="text-align: center; font-size: 0.8em; color: #F8FAFC;">
-            💻 <b>System Developer & Architect</b><br>
-            Developed with ❤️ by <br><b style="color:#38BDF8;">LOUIE B. IDULSA - PDBBM ITO I</b><br>
-            <i>DSWD FO X - PDBBM SCMS © 2026</i>
-        </div>
-        """, 
-        unsafe_allow_html=True
+    st.info(
+        "ℹ️ Para ma-view ang PDF direkta sa sulod sa app nga dili na kinahanglan i-download, "
+        "idugang ang `pypdfium2` sa `requirements.txt` (`pip install pypdfium2`)."
     )
 
-# MAIN PAGE HEADER WITH CIRCLE PEACE AND DEV LOGO
-head_col1, head_col2 = st.columns([2, 7])
-with head_col1:
-    render_main_header_logo(width=160)
-with head_col2:
-    st.title("PDBBM SCMS Beneficiary Management System")
-    st.caption("DSWD Field Office X • Peace & Development Program Registry")
+def render_single_mov_file(filename, key_prefix, record_row=None, module_label="", col_name=""):
+    file_path = os.path.join("uploaded_movs", filename)
+    st.markdown(f"**📄 File:** `{filename}`")
 
-st.divider()
+    file_bytes = None
+    from_vault = False
 
-# ==========================================
-# MODULE 0: EXECUTIVE DASHBOARD
-# ==========================================
-if menu_selection == "📊 Executive Dashboard":
-    st.subheader("📈 Executive Operations & Field Staff Performance Analytics")
-    
-    try:
-        if user_role in ["Superuser", "Admin"]:
-            df_all_cases = pd.read_sql_query(text("SELECT * FROM cases"), engine)
-        elif user_role == "Team Leader":
-            df_all_cases = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(province) = lower(:p)"), engine, params={"p": user_province})
-        else:
-            df_all_cases = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e)"), engine, params={"e": user_email})
-    except Exception:
-        df_all_cases = pd.DataFrame()
-    
-    total_beneficiaries = len(df_all_cases)
-    
-    male_cnt = 0
-    female_cnt = 0
-    if not df_all_cases.empty and 'sex' in df_all_cases.columns:
-        male_cnt = len(df_all_cases[df_all_cases['sex'].astype(str).str.lower() == 'male'])
-        female_cnt = len(df_all_cases[df_all_cases['sex'].astype(str).str.lower() == 'female'])
-
-    if not df_all_cases.empty and 'profile_status' in df_all_cases.columns:
-        completed_cnt = len(df_all_cases[df_all_cases['profile_status'].astype(str).str.lower() == 'completed'])
-        incomplete_cnt = total_beneficiaries - completed_cnt
+    if os.path.exists(file_path) and os.path.isfile(file_path):
+        with open(file_path, "rb") as f:
+            file_bytes = f.read()
     else:
-        completed_cnt = 0
-        incomplete_cnt = total_beneficiaries
+        file_bytes = get_mov_bytes_from_vault(filename)
+        if file_bytes is not None:
+            from_vault = True
 
-    col_kpi1, col_kpi2, col_kpi3, col_kpi4, col_kpi5, col_kpi6 = st.columns(6)
-    with col_kpi1:
-        st.metric("Total Beneficiaries", total_beneficiaries)
-    with col_kpi2:
-        st.metric("👨 Male Clients", male_cnt)
-    with col_kpi3:
-        st.metric("👩 Female Clients", female_cnt)
-    with col_kpi4:
-        st.metric("🟢 Completed Profiles", completed_cnt)
-    with col_kpi5:
-        st.metric("🟡 Incomplete / Drafts", incomplete_cnt)
-    with col_kpi6:
-        st.metric("Active Field Staff", len(df_all_cases['staff_email'].dropna().unique()) if not df_all_cases.empty and 'staff_email' in df_all_cases.columns else 0)
+    if file_bytes is not None:
+        if from_vault:
+            st.info("☁️ Loaded from persistent database vault after server restart.")
 
-    st.divider()
-    col_dash1, col_dash2 = st.columns(2)
-    with col_dash1:
-        st.markdown("### 📍 Total Beneficiaries per Province")
-        if not df_all_cases.empty and 'province' in df_all_cases.columns:
-            prov_summary = df_all_cases['province'].value_counts().reset_index()
-            prov_summary.columns = ['Province', 'Total Entries']
-            st.dataframe(prov_summary, use_container_width=True, hide_index=True)
-        else:
-            st.info("No data available.")
-
-    with col_dash2:
-        st.markdown("### 👥 Field Staff Summary Breakdown")
-        if not df_all_cases.empty and 'province' in df_all_cases.columns and 'staff_email' in df_all_cases.columns:
-            staff_summary = df_all_cases.groupby(['province', 'staff_email']).size().reset_index(name='Total Encoded Entries')
-            staff_summary.columns = ['Province Jurisdiction', 'Staff Email / Encoder', 'Encoded Count']
-            st.dataframe(staff_summary, use_container_width=True, hide_index=True)
-        else:
-            st.info("No encoder data recorded.")
-
-# ==========================================
-# MODULE 1: PERSONAL & PROFILING (GENERAL INTAKE SHEET PAGE 1)
-# ==========================================
-elif menu_selection == "👤 1. Personal & Profiling":
-    st.subheader("PART I. IDENTIFYING INFORMATION (Impormasyon ng Kinatawan)")
-    b_options = get_beneficiary_options()
-    
-    col_sel, col_btn1, col_btn2 = st.columns([3, 1, 1])
-    with col_sel:
-        selected_option = st.selectbox("🔍 Search Client Record or Add New Beneficiary:", ["-- ADD NEW BENEFICIARY --"] + list(b_options.keys()))
-    with col_btn1:
-        st.write("")
-        st.write("")
-        if st.button("➕ Add New Client", use_container_width=True):
-            st.session_state["autofill_data"] = {}
-            st.rerun()
-    with col_btn2:
-        st.write("")
-        st.write("")
-        if st.button("❌ Cancel / Clear", use_container_width=True):
-            st.session_state["autofill_data"] = {}
-            st.rerun()
-
-    c_data = st.session_state.get("autofill_data", {})
-    if selected_option != "-- ADD NEW BENEFICIARY --":
-        selected_id = b_options[selected_option]
-        c_data = get_client_record(selected_id)
-        st.info(f"✏ Editing Local Database Beneficiary: **{c_data.get('first_name','')} {c_data.get('last_name','')}**")
-
-    control_no_val = st.text_input("TFDCC Household ID No.* / DC Serial Number (for MILF):", value=str(c_data.get("control_no", "") or c_data.get("dc_serial_no", "") or ""), help="For MILF clients, use TFDCC HH ID and DC Serial Numbers. For CPP/NPA/NDF and FVE, use JAPIC Certification.")
-
-    if control_no_val.strip() != "":
-        current_id = c_data.get("id", 0)
-        try:
-            with engine.connect() as conn:
-                dup = conn.execute(
-                    text("SELECT id, first_name, last_name, staff_email FROM cases WHERE lower(control_no) = lower(:c) AND id != :id"),
-                    {"c": control_no_val.strip(), "id": current_id}
-                ).fetchone()
-            if dup:
-                st.error(f"⚠️ **DUPLICATE DETECTED:** Household ID No. '{control_no_val}' is already registered in the system under **{dup[1]} {dup[2]}** (Encoded by: {dup[3]}). Please verify before saving!")
-        except Exception:
-            pass
-
-    with st.form("personal_info_form"):
-        col_hdr1, col_hdr2, col_hdr3 = st.columns([2, 2, 2])
-        with col_hdr1:
-            gis_date_picker = st.date_input("Date (MM/DD/YYYY):", value=parse_date_str(c_data.get("gis_date"), datetime.date.today()))
-        with col_hdr2:
-            crn_number = st.text_input("Combatant Reference Number (CRN) / Client ID:", value=str(c_data.get("crn_number", "") or c_data.get("client_id", "") or ""))
-        with col_hdr3:
-            sw_assessment_val = str(c_data.get("sw_assessment", "") or "").strip()
-            curr_prof_st = "Completed" if sw_assessment_val != "" else "Incomplete / Draft"
-            profile_status = st.text_input("📌 Encoding Completion Status (Auto-Computed):", value=curr_prof_st, disabled=True)
-
-        st.markdown("##### 🎖️ INVOLVEMENT (Pakikilahok)")
-        col_inv1, col_inv2, col_inv3 = st.columns(3)
-        with col_inv1:
-            affiliated_group = st.selectbox("Affiliated Group/Organization*", ["MILF", "MNLF", "KAPATIRAN (RPMP-RPA-ABB)", "CPP/NPA/NDF", "CPLA (Cordillera People's Liberation Army)", "Private Armed Group", "FVE", "None"], index=0)
-            fve_specify = st.text_input("FVE (pls specify):", value=str(c_data.get("fve_specify", "") or ""))
-            pag_specify = st.text_input("Private Armed Group (pls specify):", value=str(c_data.get("pag_specify", "") or ""))
-        with col_inv2:
-            vot_status = st.selectbox("Victim of Terrorism (VoT)", ["No", "Yes"], index=0)
-            ciac_status = st.selectbox("Child Involved in Armed Conflict (CIAC)", ["No", "Yes"], index=0)
-        with col_inv3:
-            rank_role = st.text_input("Rank or role within group:", value=str(c_data.get("rank_role", "") or ""))
-            duration_involvement = st.text_input("Duration of involvement:", value=str(c_data.get("duration_involvement", "") or ""))
-
-        col_act1, col_act2 = st.columns(2)
-        with col_act1:
-            locations_activities = st.text_input("Locations Where Activities Took Place:", value=str(c_data.get("locations_activities", "") or ""))
-        with col_act2:
-            types_activities = st.text_input("Types of Activities Involved:", value=str(c_data.get("types_activities", "") or ""))
-
-        st.divider()
-        st.markdown("##### 👤 Client Name & Contact Details")
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            last_name = st.text_input("Last Name (Apelyido)*", value=str(c_data.get("last_name", "") or ""))
-            first_name = st.text_input("First Name (Unang Pangalan)*", value=str(c_data.get("first_name", "") or ""))
-            middle_name = st.text_input("Middle Name (Gitnang Pangalan)", value=str(c_data.get("middle_name", "") or ""))
-            ext_name = st.text_input("Ext. (Sr, Jr, I, II)", value=str(c_data.get("ext_name", "") or ""))
-            alias = st.text_input("Alias (if any)", value=str(c_data.get("alias", "") or ""))
-        with col2:
-            purok = st.text_input("House No./Street/Purok", value=str(c_data.get("purok", "") or ""))
-            barangay = st.text_input("Barangay", value=str(c_data.get("barangay", "") or ""))
-            city_muni = st.text_input("City/Municipality", value=str(c_data.get("city_muni", "") or ""))
-            p_idx = PROVINCES_LIST.index(user_province) if user_province in PROVINCES_LIST else 0
-            province = st.selectbox("Province/District*", PROVINCES_LIST, index=p_idx)
-            region = st.text_input("Region", value=str(c_data.get("region", "Region X") or "Region X"))
-        with col3:
-            phone_no = st.text_input("Phone No. (Numero ng Telepono)", value=str(c_data.get("phone_no", "") or ""))
-            bday_picker = st.date_input("Birthdate (Kapanganakan)*", value=parse_date_str(c_data.get("birthdate"), date(1995, 1, 1)))
-            
-            today = date.today()
-            calc_age = today.year - bday_picker.year - ((today.month, today.day) < (bday_picker.month, bday_picker.day))
-            age = st.number_input("Age (Edad)", min_value=0, max_value=120, value=int(calc_age))
-            
-            sex = st.selectbox("Sex (Kasarian)*", ["Male", "Female"], index=0 if c_data.get("sex") != "Female" else 1)
-            civil_status = st.selectbox("Civil Status (Katayuang Sibil)", ["Single", "Married", "Widowed", "Separated", "Common Law"], index=0)
-        with col4:
-            marriage_details = st.selectbox("Marriage Details (if Married)", ["N/A", "Monogamous (isang asawa lang)", "Polygamous (higit isang asawa)"], index=0)
-            num_wives = st.number_input("How many wives (ilang asawa)?", min_value=0, max_value=10, value=int(c_data.get("num_wives", 0) or 0))
-            wife_order = st.selectbox("For Married Female Combatants:", ["N/A", "First Wife", "Second Wife", "Third Wife", "Fourth Wife and up"], index=0)
-
-        st.divider()
-        st.markdown("##### 📜 Biographical Information (Impormasyon sa Buhay)")
-        col_b1, col_b2, col_b3 = st.columns(3)
-        with col_b1:
-            place_of_birth = st.text_input("Place of Birth (Lugar ng Kapanganakan):", value=str(c_data.get("place_of_birth", "") or ""))
-            ethnicity = st.text_input("Ethnicity (Lahing Pinanggalingan):", value=str(c_data.get("ethnicity", "") or ""))
-            place_of_integration = st.text_input("Place of Integration (Lugar ng Pagbabalik):", value=str(c_data.get("place_of_integration", "") or ""))
-            physical_disability = st.selectbox("Physical Disability Status (Kapansanang Pisikal):", ["None", "Visual Impairment", "Hearing Impairment", "Speech impairment", "Physically Handicapped"], index=0)
-            health_conditions_maint = st.text_input("Health Conditions & Maintenance Medicine:", value=str(c_data.get("health_conditions_maint", "") or ""))
-        with col_b2:
-            education_type = st.selectbox("Education (Edukasyon):", ["Public", "Private", "Formal", "Non-Formal", "Religious (Madrasa /Seminarian /etc.)", "Informal"], index=0)
-            school_name_dates = st.text_input("Name of Educational Institution and inclusive dates:", value=str(c_data.get("school_name_dates", "") or ""))
-            education_level = st.selectbox("Educational Level (Antas ng Natapos):", ["Primary", "Secondary", "Tertiary (specify degree)", "Post-Graduate (specify degree)", "N/A"], index=0)
-            occupation_before = st.text_input("Occupation Before Involvement in Armed Group:", value=str(c_data.get("occupation_before", "") or ""))
-            current_occupation = st.text_input("Current Occupation (After Involvement in Armed Group):", value=str(c_data.get("current_occupation", "") or ""))
-        with col_b3:
-            motivations_joining = st.text_area("Motivations for Joining (Mga Dahilan sa Pagsali):", value=str(c_data.get("motivations_joining", "") or ""))
-            reasons_leaving = st.text_area("Events or Circumstances Leading to Disengagement:", value=str(c_data.get("reasons_leaving", "") or ""))
-            intentions_motivations = st.text_area("Current Intentions and Motivations:", value=str(c_data.get("intentions_motivations", "") or ""))
-
-        st.divider()
-        st.markdown("##### 🗣️ What dialect are you able to? (Anong diyalekto ang iyong alam gamitin?)")
-        
-        saved_dialects_str = str(c_data.get("dialects_spoken", "") or "")
-        dialect_selections = {}
-        grid_col1, grid_col2 = st.columns(2)
-        
-        with grid_col1:
-            st.markdown("**List of Dialect (Group 1)** | **SPEAK** | **READ** | **WRITE**")
-            for d_name in DIALECTS_LIST_1:
-                dc1, dc2, dc3, dc4 = st.columns([3, 2, 2, 2])
-                with dc1:
-                    st.write(f"**{d_name}**")
-                with dc2:
-                    spk = st.checkbox("Speak", value=(f"{d_name}_SPEAK" in saved_dialects_str or f"{d_name}" in saved_dialects_str), key=f"chk_spk_{d_name}")
-                with dc3:
-                    rd = st.checkbox("Read", value=(f"{d_name}_READ" in saved_dialects_str), key=f"chk_rd_{d_name}")
-                with dc4:
-                    wrt = st.checkbox("Write", value=(f"{d_name}_WRITE" in saved_dialects_str), key=f"chk_wrt_{d_name}")
-                dialect_selections[d_name] = {"speak": spk, "read": rd, "write": wrt}
-
-        with grid_col2:
-            st.markdown("**List of Dialect (Group 2)** | **SPEAK** | **READ** | **WRITE**")
-            for d_name in DIALECTS_LIST_2:
-                dc1, dc2, dc3, dc4 = st.columns([3, 2, 2, 2])
-                with dc1:
-                    st.write(f"**{d_name}**")
-                with dc2:
-                    spk = st.checkbox("Speak", value=(f"{d_name}_SPEAK" in saved_dialects_str), key=f"chk_spk_{d_name}")
-                with dc3:
-                    rd = st.checkbox("Read", value=(f"{d_name}_READ" in saved_dialects_str), key=f"chk_rd_{d_name}")
-                with dc4:
-                    wrt = st.checkbox("Write", value=(f"{d_name}_WRITE" in saved_dialects_str), key=f"chk_wrt_{d_name}")
-                dialect_selections[d_name] = {"speak": spk, "read": rd, "write": wrt}
-
-        st.divider()
-        st.markdown("##### 🛡️ PART II. SOCIAL PROTECTION (PROTEKSYONG PANLIPUNAN)")
-        col_sp1, col_sp2, col_sp3 = st.columns(3)
-        with col_sp1:
-            birth_cert_status = st.selectbox("1. Do you have a Birth Certificate?", ["Yes", "No"], index=0)
-            birth_cert_auth = st.selectbox("Birth Cert Authenticated?", ["Yes", "No"], index=0)
-            birth_cert_registry = st.text_input("If Yes, indicate date and place of registry:", value=str(c_data.get("birth_cert_registry", "") or ""))
-        with col_sp2:
-            marriage_cert_status = st.selectbox("2. Do you have a Marriage Certificate?", ["Yes", "No", "N/A"], index=0)
-            marriage_cert_auth = st.selectbox("Marriage Cert Authenticated?", ["Yes", "No", "N/A"], index=0)
-            philhealth_status = st.selectbox("3. Are you a PhilHealth Member?", ["Yes", "No"], index=0)
-            philhealth_active = st.selectbox("PhilHealth Status:", ["Active", "Inactive", "N/A"], index=0)
-        with col_sp3:
-            philhealth_id = st.text_input("If Yes, Philhealth ID No.:", value=str(c_data.get("philhealth_id", "") or ""))
-            philhealth_category = st.selectbox("Philhealth Membership Category:", ["Direct Contributor", "Indirect Contributor", "Formal Economy", "Informal Economy", "OFWs", "Domestic Workers (Kasambahay)", "Lifetime Members", "Sponsored Members", "Senior Citizen", "Indigent", "Group Enrollment", "4Ps Member", "Others"], index=0)
-
-        submit_t1 = st.form_submit_button("💾 Save / Update Personal Record", use_container_width=True)
-        if submit_t1:
-            birthdate_str = bday_picker.strftime('%Y-%m-%d')
-            gis_date_str = gis_date_picker.strftime('%m-%d-%Y')
-            
-            formatted_dialects_list = []
-            for d_key, d_vals in dialect_selections.items():
-                abilities = []
-                if d_vals["speak"]: abilities.append("SPEAK")
-                if d_vals["read"]: abilities.append("READ")
-                if d_vals["write"]: abilities.append("WRITE")
-                if abilities:
-                    formatted_dialects_list.append(f"{d_key} ({', '.join(abilities)})")
-            
-            dialects_spoken = "; ".join(formatted_dialects_list) if formatted_dialects_list else "None"
-
-            if not last_name or not first_name or not control_no_val.strip():
-                st.error("⚠️ **REQUIRED FIELDS MISSING:** Palihug sulati ang Household ID No., First Name, ug Last Name!")
-            else:
-                params_save = {
-                    "control_no": control_no_val.strip(), "dc_serial_no": control_no_val.strip(), "gis_date": gis_date_str, "client_id": crn_number,
-                    "last_name": last_name.strip(), "first_name": first_name.strip(), "middle_name": middle_name,
-                    "ext_name": ext_name, "alias": alias, "phone_no": phone_no, "birthdate": birthdate_str,
-                    "age": age, "sex": sex, "civil_status": civil_status, "crn_number": crn_number,
-                    "vot_status": vot_status, "ciac_status": ciac_status, "marriage_details": marriage_details,
-                    "num_wives": num_wives, "wife_order": wife_order, "affiliated_group": affiliated_group,
-                    "fve_specify": fve_specify, "pag_specify": pag_specify, "rank_role": rank_role,
-                    "duration_involvement": duration_involvement, "locations_activities": locations_activities, "types_activities": types_activities,
-                    "purok": purok, "barangay": barangay, "city_muni": city_muni, "province": province, "region": region, "place_of_birth": place_of_birth,
-                    "ethnicity": ethnicity, "place_of_integration": place_of_integration, "physical_disability": physical_disability,
-                    "health_conditions_maint": health_conditions_maint, "education_type": education_type, "school_name_dates": school_name_dates,
-                    "education_level": education_level, "occupation_before": occupation_before, "current_occupation": current_occupation,
-                    "motivations_joining": motivations_joining, "reasons_leaving": reasons_leaving, "intentions_motivations": intentions_motivations,
-                    "dialects_spoken": dialects_spoken, "birth_cert_status": birth_cert_status, "birth_cert_registry": birth_cert_registry,
-                    "marriage_cert_status": marriage_cert_status, "philhealth_status": philhealth_status, "philhealth_id": philhealth_id,
-                    "philhealth_category": philhealth_category, "profile_status": curr_prof_st, "staff_email": user_email, "encoded_by": user_email
-                }
-                
-                try:
-                    if selected_option == "-- ADD NEW BENEFICIARY --" and not c_data.get("id"):
-                        cols = ", ".join(params_save.keys())
-                        vals = ", ".join([f":{k}" for k in params_save.keys()])
-                        with engine.begin() as conn:
-                            conn.execute(text(f"INSERT INTO cases ({cols}) VALUES ({vals})"), params_save)
-                    else:
-                        edit_id = c_data.get("id", selected_id)
-                        params_save["edit_id"] = edit_id
-                        set_clause = ", ".join([f"{k}=:{k}" for k in params_save.keys() if k != "edit_id" and k != "encoded_by"])
-                        with engine.begin() as conn:
-                            conn.execute(text(f"UPDATE cases SET {set_clause} WHERE id=:edit_id"), params_save)
-                    
-                    st.toast("✅ Beneficiary record saved to Supabase!", icon="🎉")
-                    st.success("✅ Beneficiary record updated successfully!")
-                    st.session_state["autofill_data"] = {}
-                except Exception as ex:
-                    st.error(f"❌ DATABASE ERROR: {ex}")
-
-# ==========================================
-# MODULES 2 TO 9: ALWAYS-VISIBLE FULL FORMS
-# ==========================================
-elif menu_selection in [
-    "👨‍👩‍👧‍👦 2. Family & Health", "📋 3. Prob & Assistance", "🏠 4. Infrastructure & Housing", 
-    "🌾 5. Agricultural Info", "💼 6. Livelihood & Employment", "🧠 7. Psychosocial Support", 
-    "🎓 8. Capacity Building", "📝 9. Assessment & Updates"
-]:
-    st.subheader(f"Module: {menu_selection}")
-    b_options = get_beneficiary_options()
-    
-    selected_b_label = None
-    case_id = None
-    c_data = {}
-
-    if b_options:
-        selected_b_label = st.selectbox("🔍 Select Beneficiary Record to Manage:", list(b_options.keys()))
-        case_id = b_options[selected_b_label]
-        c_data = get_client_record(case_id)
-        st.info(f"📄 Currently Editing Data Profile for: **{c_data.get('first_name', '')} {c_data.get('last_name', '')}**")
-    else:
-        st.info("ℹ️ Standard eGIS Form Template. Select or add a client in Module 1 to bind data.")
-
-    if menu_selection == "👨‍👩‍👧‍👦 2. Family & Health":
-        st.markdown("##### 🔒 Linked Household Identification")
-        st.text_input("Auto-Filled TFDCC Household ID No. (Locked):", value=str(c_data.get("control_no", "NO HH ID LINKED")), disabled=True)
-        st.divider()
-
-        st.markdown("##### 👨‍👩‍👧‍👦 PART III. FAMILY COMPOSITION (KOMPOSISYON NG PAMILYA)")
-        
-        with st.expander("➕ Add New Living Family Member", expanded=True):
-            with st.form("add_living_fam_form", clear_on_submit=True):
-                f_name = st.text_input("Buong Pangalan (Complete Name)*")
-                col_f1, col_f2, col_f3 = st.columns(3)
-                with col_f1:
-                    f_rel = st.text_input("Relasyon sa Kinatawan (Relationship to Client)")
-                    f_bday = st.date_input("Kapanganakan (Birthday)*", value=date(2000, 1, 1))
-                    today = date.today()
-                    f_age = today.year - f_bday.year - ((today.month, today.day) < (f_bday.month, f_bday.day))
-                    st.number_input("Edad (Age)", value=int(f_age), disabled=True)
-                    f_gender = st.selectbox("Kasarian (Gender)", ["Male", "Female"])
-                    f_status = st.selectbox("Katayuang Sibil (Civil Status)", ["Single", "Married", "Widowed", "Separated"])
-                with col_f2:
-                    f_ethnicity = st.text_input("Lahing Pinanggalingan (Ethnicity)")
-                    f_skills = st.text_input("Kasanayan (Skills)")
-                    f_occ = st.text_input("Trabaho (Occupation)")
-                    f_income = st.text_input("Buwanang Kita (Monthly Income):", value="0.00")
-                    f_live_in_hh = st.selectbox("Live in your current household?", ["YES", "NO"])
-                with col_f3:
-                    f_pwd = st.selectbox("May Kapansanan (PWD)", ["No", "With Disability"])
-                    f_pwd_kind = st.text_input("Uri ng Kapansanan (Kind of Disability):")
-                    f_meds = st.text_input("Maintenance Medicine na iniinom:")
-                    f_attending_school = st.selectbox("Attending School?", ["No", "Yes"])
-                    f_school_details = st.text_input("If Yes: Course, Level, Year, School/University:")
-                    f_highest_educ = st.text_input("Highest Educational Attainment:")
-                    f_other_govt = st.text_input("Enrolled to Other Government Programs (SSS, GSIS, PAG-IBIG):")
-                
-                sub_add_fam = st.form_submit_button("➕ Add Living Family Member to List")
-                if sub_add_fam:
-                    if f_name and case_id:
-                        try:
-                            with engine.begin() as conn:
-                                conn.execute(
-                                    text("""
-                                        INSERT INTO family_members (case_id, full_name, age, birthdate, gender, relationship, civil_status, ethnicity, skills, occupation, monthly_income, live_in_hh, pwd_status, maintenance_meds, attending_school, school_details, highest_educ, other_govt_prog)
-                                        VALUES (:cid, :fn, :age, :bd, :g, :rel, :cs, :eth, :sk, :occ, :inc, :li, :pwd, :meds, :ats, :sch, :he, :og)
-                                    """),
-                                    {
-                                        "cid": case_id, "fn": f_name, "age": f_age, "bd": f_bday.strftime('%Y-%m-%d'),
-                                        "g": f_gender, "rel": f_rel, "cs": f_status, "eth": f_ethnicity,
-                                        "sk": f_skills, "occ": f_occ, "inc": f_income, "li": f_live_in_hh, "pwd": f_pwd, "meds": f_meds,
-                                        "ats": f_attending_school, "sch": f_school_details, "he": f_highest_educ, "og": f_other_govt
-                                    }
-                                )
-                            st.toast(f"✅ Added living family member: {f_name}", icon="👨‍👩‍👧‍👦")
-                            st.success(f"✅ Added family member: {f_name}")
-                            st.rerun()
-                        except Exception as ex:
-                            st.error(f"❌ DATABASE ERROR: {ex}")
-
-        if case_id:
-            try:
-                df_fam = pd.read_sql_query(text("SELECT full_name AS 'Full Name', birthdate AS 'Birthdate', age AS 'Age', gender AS 'Gender', relationship AS 'Relationship', occupation AS 'Occupation', monthly_income AS 'Income', live_in_hh AS 'Lives in HH', pwd_status AS 'PWD Status' FROM family_members WHERE case_id = :cid"), engine, params={"cid": case_id})
-                if not df_fam.empty:
-                    st.write("##### 📋 Registered Living Family Members History:")
-                    st.dataframe(df_fam, use_container_width=True, hide_index=True)
-            except Exception:
-                pass
-
-        st.divider()
-        st.markdown("##### ✝️ YUMAONG KAMAG-ANAK (Deceased Family Member)")
-        
-        with st.expander("➕ Add Deceased Family Member", expanded=True):
-            with st.form("add_deceased_fam_form", clear_on_submit=True):
-                col_d1, col_d2 = st.columns(2)
-                with col_d1:
-                    d_name = st.text_input("Buong Pangalan (Complete Name)*")
-                    d_rel = st.text_input("Relasyon sa Kinatawan (Relationship to Client)")
-                with col_d2:
-                    d_date_picker = st.date_input("Petsa ng Kamatayan (Date of Death)*", value=date.today())
-                    d_reason = st.text_input("Sanhi ng Kamatayan (Reason of Death)")
-                    d_cert = st.selectbox("Mayroong Sertipiko ng Kamatayan (Has Death Certificate)", ["Yes", "No"])
-                
-                sub_add_dec = st.form_submit_button("➕ Add Deceased Family Member to List")
-                if sub_add_dec:
-                    if d_name and case_id:
-                        try:
-                            with engine.begin() as conn:
-                                conn.execute(
-                                    text("""
-                                        INSERT INTO deceased_family_members (case_id, full_name, relationship, date_of_death, reason_of_death, has_death_cert)
-                                        VALUES (:cid, :fn, :rel, :dod, :rod, :hdc)
-                                    """),
-                                    {
-                                        "cid": case_id, "fn": d_name, "rel": d_rel,
-                                        "dod": d_date_picker.strftime('%Y-%m-%d'), "rod": d_reason, "hdc": d_cert
-                                    }
-                                )
-                            st.toast(f"✅ Added deceased family member: {d_name}", icon="✝️")
-                            st.success(f"✅ Added deceased family member: {d_name}")
-                            st.rerun()
-                        except Exception as ex:
-                            st.error(f"❌ DATABASE ERROR: {ex}")
-
-        if case_id:
-            try:
-                df_dec = pd.read_sql_query(text("SELECT full_name AS 'Full Name', relationship AS 'Relationship', date_of_death AS 'Date of Death', reason_of_death AS 'Cause of Death', has_death_cert AS 'Death Cert' FROM deceased_family_members WHERE case_id = :cid"), engine, params={"cid": case_id})
-                if not df_dec.empty:
-                    st.write("##### 📋 Registered Deceased Family Members History:")
-                    st.dataframe(df_dec, use_container_width=True, hide_index=True)
-            except Exception:
-                pass
-
-    else:
-        with st.form("module_general_form"):
-            if menu_selection == "📋 3. Prob & Assistance":
-                st.markdown("##### 📋 PART IV: Presenting Problem (Pangunahing Suliranin)")
-                prob_desc = st.text_area("Presenting Problem Description (Include medical, legal and social issues if explicitly approved):", value=str(c_data.get("prob_desc", "")))
-                assist_requested = st.text_area("Specific Assistance Requested from DSWD:", value=str(c_data.get("assist_requested", "")))
-
-            elif menu_selection == "🏠 4. Infrastructure & Housing":
-                st.markdown("##### 🏠 ANNEX A - PART I. INFRASTRUCTURE (IMPRASTRUKTURA)")
-                st.markdown("**A. HOUSING INFORMATION (IMPORMASYON PATUNGKOL SA TIRAHAN)**")
-                col_h1, col_h2 = st.columns(2)
-                with col_h1:
-                    house_ownership = st.selectbox("1. Do you own a house and lot?", ["Owned house and lot", "Owned house only", "Owned lot only", "rented", "sharing with parents/ family members/ relatives/ others", "Others"])
-                    housing_condition = st.selectbox("2. Housing Condition:", ["New house", "Old house", "Dilapidated House (Bahay na sira o lubhang napinsala)"])
-                    house_renovate_pref = st.selectbox("Would you like to renovate your house?", ["Yes", "No"])
-                    roofing_material = st.selectbox("3. Roofing Material:", ["Concrete", "GI Sheet", "Nipa", "Others"])
-                    walling_material = st.selectbox("Walling Material:", ["Bamboo", "Concrete", "Nipa", "Wood/lumber", "Others"])
-                with col_h2:
-                    flooring_material = st.selectbox("Flooring Material:", ["Bamboo", "Concrete", "Soil", "Wood/Lumber", "Others"])
-                    water_source = st.selectbox("4. Source of Water:", ["Within place of residence (Public Water Distributor/Wells/Delivery)", "Outside place of residence (Rivers/Rain)", "None"])
-                    sanitation_toilet = st.selectbox("5. Sanitation: Does the household have its own restroom?", ["Yes (Inside home)", "Yes (Outside of home)", "No"])
-
-                st.divider()
-                st.markdown("##### 🏥 HEALTH INFORMATION & ACCESS TO GOVERNMENT PROGRAMS")
-                col_g1, col_g2 = st.columns(2)
-                with col_g1:
-                    illness_6months = st.text_input("Encountered any illness in last 6 months?:", value=str(c_data.get("illness_6months", "")))
-                    illness_duration = st.text_input("How long?:", value=str(c_data.get("illness_duration", "")))
-                    illness_severity = st.text_input("Severity (for immediate attention):", value=str(c_data.get("illness_severity", "")))
-                with col_g2:
-                    govt_assistance_received = st.multiselect(
-                        "Received program assistance from government in last 5 years?:",
-                        ["Pantawid Pamilyang Pilipino Program (4Ps)", "Sustainable Livelihood Program (SLP)", "Assistance to Individuals in Crisis Situation (AICS)", "PAMANA Program", "MNLF Educational Assistance Program", "DSWD KALAHI-CIDSS Program", "Social Pension", "Modified Shelter Assistance Program (MSAP)", "Other services from other Agency"]
-                    )
-                    govt_assistance_usage = st.multiselect(
-                        "How financial assistance was mainly used:",
-                        ["Food and other basic necessities", "Livelihood or business", "Children's education or personal education", "Medicines and medical expenses", "Farming or fishing activities", "House repair or construction", "Payment of debts", "Transportation or travel expenses", "Savings", "Others"]
-                    )
-                    govt_assistance_impact = st.selectbox("Extent assistance contributed to well-being of family:", ["Helped significantly (Malaki ang naitulong)", "Helped to some extent (Bahagyang nakatulong)", "Helped only minimally (Hindi gaanong nakatulong)", "Did not help (Hindi nakatulong)"])
-
-            elif menu_selection == "🌾 5. Agricultural Info":
-                st.markdown("##### 🌾 PART II. AGRICULTURAL INFORMATION (IMPORMASYON SA AGRIKULTURA)")
-                col_a1, col_a2 = st.columns(2)
-                with col_a1:
-                    land_ownership = st.selectbox("1. Do you own a land?", ["Yes", "No"])
-                    land_ownership_type = st.selectbox("Type of ownership:", ["Titled (may titolo)", "Stewardship/Tenant", "Pre-patent", "Certificate of Ancestral Domain Title (CADT)", "Rented"])
-                    land_location = st.text_input("Location:", value=str(c_data.get("land_location", "")))
-                    land_area = st.text_input("How wide (Hectares/sqm):", value=str(c_data.get("land_area", "")))
-                    agri_equipment = st.selectbox("2. Do you have an agricultural equipment?:", ["owned", "acquired", "None"])
-                with col_a2:
-                    agri_cultivation_involvement = st.selectbox("3. Are you involved in agricultural cultivation?:", ["Yes", "No"])
-                    crops_specify = st.multiselect("Crops Production:", ["Banana", "Coconut", "Corn", "Fruit bearing trees", "Industrial crops (coffee, abaca, copra, sugarcane, rubber, cacao)", "Rice", "Root crops", "Vegetables", "other"])
-                    livestock_specify = st.multiselect("Livestock and poultry:", ["carabao", "cattle", "Chicken", "Duck", "Farmed raised fish", "Goat", "Horse", "other"])
-                    fisheries_specify = st.multiselect("Fisheries Sector:", ["Freshwater fish (hito, tilapia etc.)", "Seawater fishes (bariles, etc.)", "other"])
-                    support_services_specify = st.multiselect("Support Services:", ["Agricultural supply", "Feeds", "other"])
-
-                st.divider()
-                col_a3, col_a4 = st.columns(2)
-                with col_a3:
-                    farming_interest = st.selectbox("5. Do you want to engage in farming?:", ["Yes", "No"])
-                    farming_assistance_needed = st.multiselect("6. Specific farming assistance needed:", ["Agricultural products (seedlings, livestock, fish)", "Equipment or machineries", "Infrastructure (land, road, warehouse)", "Skills and training", "Working capital (Cash)", "other"])
-                with col_a4:
-                    farming_infra_needed = st.multiselect("7. Infrastructure that may help in farming:", ["Farm to market road", "Fish landing bay", "Irrigation canal", "Multi purpose building", "Portable water system", "Solar electricity", "Warehouse", "other"])
-                    farming_skills_desired = st.multiselect("8. Skills to enhance in farming:", ["Cattle fattening", "Duck Raising", "Goat raising", "Organic farming", "other"])
-
-            elif menu_selection == "💼 6. Livelihood & Employment":
-                st.markdown("##### 💼 PART III. LIVELIHOOD AND EMPLOYMENT (KABUHAYAN AT HANAPBUHAY)")
-                st.markdown("**1. Do you own any of the following? List how many:**")
-                col_v1, col_v2, col_v3 = st.columns(3)
-                with col_v1:
-                    v_boat = st.number_input("Boat (Qty):", min_value=0, value=0)
-                    v_tricycle = st.number_input("Tricycle (Qty):", min_value=0, value=0)
-                with col_v2:
-                    v_jeepney = st.number_input("Jeepney (Qty):", min_value=0, value=0)
-                    v_van = st.number_input("Van (Qty):", min_value=0, value=0)
-                with col_v3:
-                    v_motorcycle = st.number_input("Motorcycle (Single) (Qty):", min_value=0, value=0)
-                    v_others = st.text_input("Others (specify):")
-
-                st.divider()
-                col_l1, col_l2 = st.columns(2)
-                with col_l1:
-                    occupation_status = st.selectbox("2. Do you have an occupation?:", ["Self-employed (Business)", "Wage Earner (employee)", "Wage Earner (contract of service/job order)", "No", "Not Applicable"])
-                    occupation_specify = st.text_input("Specify details:", value=str(c_data.get("occupation_specify", "")))
-                    desired_future_occ = st.text_input("Desired or preferred occupation in future:", value=str(c_data.get("desired_future_occ", "")))
-                    coop_membership = st.selectbox("3. Member of a cooperative, PO or Farmer's Org?:", ["Yes", "No"])
-                    coop_name = st.text_input("Name of cooperative/PO:", value=str(c_data.get("coop_name", "")))
-                with col_l2:
-                    business_type = st.selectbox("4. Type of business engaged in:", ["Manafacturing business (local food, clothing, accessories)", "Merchandise store (sari-sari, groceries, vending)", "Service shop (karenderia, repair, salon)", "Others", "None"])
-                    business_duration = st.selectbox("5. How long engaged in business:", ["Less than 6 months", "7 months to 1 year", "1 to 2 years", "3 years above", "N/A"])
-                    business_goal = st.selectbox("6. Want to expand or diversify business?:", ["Expand business", "Diversity to a new one", "N/A"])
-                    business_opportunities = st.multiselect("10. Opportunities that will enhance business:", ["Access to financial institution/capital", "Access to information and communications technology", "Access to market", "Access to trainings"])
-                    uniformed_interest = st.multiselect("11. Interested to become or next of kin part of:", ["AFP", "PNP", "Coast Guard", "BJMP", "CAFGU", "Forest Guard (DENR)", "Others"])
-
-                st.divider()
-                st.markdown("##### 🚧 B. SHORT TERM EMPLOYMENT: CASH FOR WORK (CFW)")
-                col_cfw1, col_cfw2 = st.columns(2)
-                with col_cfw1:
-                    cfw_interest = st.selectbox("1. Engage in community work through Cash for work (CFW)?:", ["Yes", "No"])
-                with col_cfw2:
-                    cfw_preferred_tasks = st.multiselect("2. Specific work to help community:", ["De-clogging of canal/waterway", "Flood control/diking", "Gardening", "Road cleaning/grass cutting", "Tree planting", "Other"])
-
-            elif menu_selection == "🧠 7. Psychosocial Support":
-                st.markdown("##### 🧠 PART IV: PSYCHOSOCIAL SUPPORT (SERBISYONG SUPORTANG SIKOSOSYAL)")
-                col_p1, col_p2 = st.columns(2)
-                with col_p1:
-                    mental_health_impact = st.text_area("A1. How did involvement affect mental/emotional well-being?:", value=str(c_data.get("mental_health_impact", "")))
-                    psychological_challenges = st.text_area("A2. Experience ongoing psychological challenges (restlessness, loss of interest, intrusive thoughts)?:", value=str(c_data.get("psychological_challenges", "")))
-                    psychological_mgmt = st.text_area("A3. How do you manage these psychological challenges?:", value=str(c_data.get("psychological_mgmt", "")))
-                    family_rel_change = st.text_area("B1. How has relationship with family & community changed?:", value=str(c_data.get("family_rel_change", "")))
-                    support_system = st.text_area("B2. Support system in place now?:", value=str(c_data.get("support_system", "")))
-                    feeling_safety = st.selectbox("B3. Feel safe in residence/community?:", ["Yes", "No", "Uncertain"])
-                with col_p2:
-                    uniformed_personnel_feeling = st.text_area("B4. What do you feel when seeing uniformed personnel?:", value=str(c_data.get("uniformed_personnel_feeling", "")))
-                    threats_perceived = st.text_area("B5. Feel any threats in community?:", value=str(c_data.get("threats_perceived", "")))
-                    current_time_spent = st.text_area("C1. How do you spend your time currently?:", value=str(c_data.get("current_time_spent", "")))
-                    hopes_aspirations = st.text_area("C2. Hopes and aspirations for the future?:", value=str(c_data.get("hopes_aspirations", "")))
-                    peace_effort_changes = st.text_area("F1. How changed since peace efforts with government?:", value=str(c_data.get("peace_effort_changes", "")))
-                    personal_growth_pride = st.text_area("F2. Personal growth or changes most proud of?:", value=str(c_data.get("personal_growth_pride", "")))
-
-                st.divider()
-                st.markdown("##### 🏛️ G. Political and Security Landscape")
-                col_p3, col_p4 = st.columns(2)
-                with col_p3:
-                    barangay_council_member = st.selectbox("1. Member of Barangay Council?:", ["Yes", "No"])
-                    pending_legal_cases = st.text_input("2. Aware of existing or pending criminal/civil case?:", value=str(c_data.get("pending_legal_cases", "")))
-                with col_p4:
-                    arrest_history = st.text_input("3. Apprehended/arrested for non-armed group matters?:", value=str(c_data.get("arrest_history", "")))
-                    message_to_govt = st.text_area("4. Anything you want to convey to the Government?:", value=str(c_data.get("message_to_govt", "")))
-
-            elif menu_selection == "🎓 8. Capacity Building":
-                st.markdown("##### 🎓 PART V: CAPACITY BUILDING (PAGPAPALAKAS NG KAKAYAHAN)")
-                col_cb1, col_cb2 = st.columns(2)
-                with col_cb1:
-                    existing_skills = st.text_input("A1. What skills do you have?:", value=str(c_data.get("existing_skills", "")))
-                    skills_acquisition_mode = st.selectbox("A2. How acquired skills?:", ["experience", "training", "both"])
-                    skills_training_wish = st.selectbox("A3. Wish to undergo skills trainings?:", ["Yes", "No"])
-                    skills_training_pref = st.selectbox("A4. Preferred type of skills training?:", ["community based", "centers based"])
-                with col_cb2:
-                    formal_education_wish = st.selectbox("B1. Wish to enroll under formal education?:", ["YES", "NO", "NOT APPLICABLE"])
-                    als_enrollment_wish = st.selectbox("B2. Willing to enroll in Alternative Learning System (ALS)?:", ["YES", "NO", "NOT APPLICABLE"])
-                    education_docs_available = st.multiselect("B3. Requirements to start formal education:", ["NSO/PSA Authenticated Birth Certificate", "Form 137 for last school attended", "Certificate of earned units (College)", "Certificate of Accreditation and Equivalency (ALS)", "Valid ID", "NO", "NOT APPLICABLE"])
-
-                st.divider()
-                st.markdown("##### 🛠️ D. SKILLS TRAINING COURSES (ALL 21 GIS COURSES)")
-                skills_courses_desired = st.multiselect(
-                    "Select skills training courses to enroll:",
-                    [
-                        "Agri Financing", "Housekeeping", "Baking and Pastry", "Massage", "Beautician", "Masonary", 
-                        "Carpentry", "Organic agriculture production", "Cookery", "Photo voltaic system installation and maintenance (Solar Electricity)", 
-                        "Dressmaking", "Plumbing", "Driving", "Small Engine mechanics", "Electrical, Installation and Maintenance", 
-                        "Security Service", "Entrepreneurship", "Tailoring", "Food Packaging", "Welding", "Food Processing", "Others"
-                    ]
-                )
-                
-                col_cb3, col_cb4 = st.columns(2)
-                with col_cb3:
-                    dependents_education_wish = st.text_input("B4. Dependents to enroll for Formal Ed or ALS:", value=str(c_data.get("dependents_education_wish", "")))
-                    study_grant_dependents = st.text_input("C1. Dependents to avail study grant program:", value=str(c_data.get("study_grant_dependents", "")))
-                with col_cb4:
-                    skills_training_dependents = st.text_input("D2. Dependents to avail skills training program:", value=str(c_data.get("skills_training_dependents", "")))
-
-            elif menu_selection == "📝 9. Assessment & Updates":
-                st.markdown("##### 📝 PART VI: Assessment and Updates (Pagsusuri at mga Update)")
-                sw_assessment = st.text_area("Evaluative Case Assessment & Recommendation:", value=str(c_data.get("sw_assessment", "")))
-                
-                st.info("📜 'I, the undersigned, have been fully informed properly by the interviewer as regards the nature and purpose of this profiling interview. I give my free and full consent to voluntarily participate in this activity, the accomplishment of this GIS, and to use the information given herein.' / 'Ako, na lumagda, ay maayos na naintindihan ang tagapanayam tungkol sa layunin ng profiling interview na ito. Malaya at buo ang aking pahintulot na kusang-loob na lumahok sa gawaing ito para sa pagsasakatuparan ng GIS, at sa paggamit ng impormasyong ibinigay rito.'")
-                
-                col_as1, col_as2, col_as3 = st.columns(3)
-                with col_as1:
-                    place_of_interview = st.text_input("Place of Interview:", value=str(c_data.get("place_of_interview", "") or ""))
-                with col_as2:
-                    interviewed_by = st.text_input("Interviewed by (PD BBM Staff):", value=user_email, disabled=True)
-                with col_as3:
-                    approved_by = st.text_input("Reviewed & Approved by (Approving Authority):", value=str(c_data.get("approved_by", "") or ""))
-
-            sub_m = st.form_submit_button("💾 Save / Update Module Record", use_container_width=True)
-            if sub_m:
-                if case_id:
-                    try:
-                        if menu_selection == "📋 3. Prob & Assistance":
-                            with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET prob_desc=:pd, assist_requested=:ar WHERE id=:id"), {"pd": prob_desc, "ar": assist_requested, "id": case_id})
-                        elif menu_selection == "🏠 4. Infrastructure & Housing":
-                            gar_str = ", ".join(govt_assistance_received)
-                            gau_str = ", ".join(govt_assistance_usage)
-                            with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET house_ownership=:ho, housing_condition=:hc, house_renovate_pref=:hrp, roofing_material=:rm, walling_material=:wm, flooring_material=:fm, water_source=:ws, sanitation_toilet=:st, illness_6months=:i6, illness_duration=:id, illness_severity=:isev, govt_assistance_received=:gar, govt_assistance_usage=:gau, govt_assistance_impact=:gai WHERE id=:case_id"), {"ho": house_ownership, "hc": housing_condition, "hrp": house_renovate_pref, "rm": roofing_material, "wm": walling_material, "fm": flooring_material, "ws": water_source, "st": sanitation_toilet, "i6": illness_6months, "id": illness_duration, "isev": illness_severity, "gar": gar_str, "gau": gau_str, "gai": govt_assistance_impact, "case_id": case_id})
-                        elif menu_selection == "🌾 5. Agricultural Info":
-                            cs_str = ", ".join(crops_specify)
-                            ls_str = ", ".join(livestock_specify)
-                            fs_str = ", ".join(fisheries_specify)
-                            sss_str = ", ".join(support_services_specify)
-                            fan_str = ", ".join(farming_assistance_needed)
-                            fin_str = ", ".join(farming_infra_needed)
-                            fsd_str = ", ".join(farming_skills_desired)
-                            with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET land_ownership=:lo, land_ownership_type=:lot, land_location=:ll, land_area=:la, agri_equipment=:ae, agri_cultivation_involvement=:aci, crops_specify=:cs, livestock_specify=:ls, fisheries_specify=:fs, support_services_specify=:sss, farming_interest=:fi, farming_assistance_needed=:fan, farming_infra_needed=:fin, farming_skills_desired=:fsd WHERE id=:case_id"), {"lo": land_ownership, "lot": land_ownership_type, "ll": land_location, "la": land_area, "ae": agri_equipment, "aci": agri_cultivation_involvement, "cs": cs_str, "ls": ls_str, "fs": fs_str, "sss": sss_str, "fi": farming_interest, "fan": fan_str, "fin": fin_str, "fsd": fsd_str, "case_id": case_id})
-                        elif menu_selection == "💼 6. Livelihood & Employment":
-                            veh_summary = f"Boat: {v_boat}, Tricycle: {v_tricycle}, Jeepney: {v_jeepney}, Van: {v_van}, Motorcycle: {v_motorcycle}, Others: {v_others}"
-                            bo_str = ", ".join(business_opportunities)
-                            uni_str = ", ".join(uniformed_interest)
-                            cfw_str = ", ".join(cfw_preferred_tasks)
-                            with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET vehicles_owned=:vo, occupation_status=:os, occupation_specify=:ospec, desired_future_occ=:dfo, coop_membership=:cm, coop_name=:cn, business_type=:bt, business_duration=:bd, business_goal=:bg, business_assets_owned=:bao, uniformed_service_interest=:usi, cfw_interest=:cfwi, cfw_preferred_work=:cfwpw WHERE id=:case_id"), {"vo": veh_summary, "os": occupation_status, "ospec": occupation_specify, "dfo": desired_future_occ, "cm": coop_membership, "cn": coop_name, "bt": business_type, "bd": business_duration, "bg": business_goal, "bao": bo_str, "usi": uni_str, "cfwi": cfw_interest, "cfwpw": cfw_str, "case_id": case_id})
-                        elif menu_selection == "🧠 7. Psychosocial Support":
-                            with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET mental_health_impact=:mhi, psychological_mgmt=:pm, family_rel_change=:frc, support_system=:ss, feeling_safety=:fs, uniformed_personnel_feeling=:upf, threats_perceived=:tp, current_time_spent=:cts, hopes_aspirations=:ha, barangay_council_member=:bcm, pending_legal_cases=:plc, arrest_history=:ah, message_to_govt=:mtg WHERE id=:case_id"), {"mhi": mental_health_impact, "pm": psychological_mgmt, "frc": family_rel_change, "ss": support_system, "fs": feeling_safety, "upf": uniformed_personnel_feeling, "tp": threats_perceived, "cts": current_time_spent, "ha": hopes_aspirations, "bcm": barangay_council_member, "plc": pending_legal_cases, "ah": arrest_history, "mtg": message_to_govt, "case_id": case_id})
-                        elif menu_selection == "🎓 8. Capacity Building":
-                            sc_str = ", ".join(skills_courses_desired)
-                            ed_str = ", ".join(education_docs_available)
-                            with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET existing_skills=:es, skills_acquisition_mode=:sam, skills_training_wish=:stw, skills_training_pref=:stp, formal_education_wish=:few, als_enrollment_wish=:aew, education_docs_available=:eda, dependents_education_wish=:dew, study_grant_dependents=:sgd, skills_training_desired_list=:stdl, skills_training_dependents=:std WHERE id=:case_id"), {"es": existing_skills, "sam": skills_acquisition_mode, "stw": skills_training_wish, "stp": skills_training_pref, "few": formal_education_wish, "aew": als_enrollment_wish, "eda": ed_str, "dew": dependents_education_wish, "sgd": study_grant_dependents, "stdl": sc_str, "std": skills_training_dependents, "case_id": case_id})
-                        elif menu_selection == "📝 9. Assessment & Updates":
-                            with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET sw_assessment=:sa, place_of_interview=:poi, interviewed_by=:ib, approved_by=:ab WHERE id=:case_id"), {"sa": sw_assessment, "poi": place_of_interview, "ib": user_email, "ab": approved_by, "case_id": case_id})
-                        
-                        st.toast(f"✅ Saved {menu_selection} to Supabase!", icon="💾")
-                        st.success(f"✅ Successfully saved {menu_selection} information for beneficiary ID #{case_id}!")
-                    except Exception as ex:
-                        st.error(f"❌ DATABASE ERROR: {ex}")
-                else:
-                    st.warning("⚠️ Palihug pagpili una og beneficiary record sa Module 1!")
-
-# ==========================================
-# MASTERLIST DATABASE MODULE
-# ==========================================
-elif menu_selection == "📊 Masterlist Database":
-    st.subheader("📊 Masterlist Case Database & User Entries Viewing Panel")
-    appsheet_file = "Appsheet Data 10062026.xlsx"
-
-    tabs_list = [
-        "📱 Personal Encoding Panel", 
-        "🌐 Authorized Regional Masterlist", 
-        "📁 Integrated AppSheet Reference Database", 
-        "📥 Export Reports"
-    ]
-    
-    if user_role in ["Superuser", "Admin"]:
-        tabs_list.append("🗑️ Pending Delete Approvals")
-    
-    if user_role == "Superuser":
-        tabs_list.append("📦 Deleted Cases Archive")
-
-    if "target_tab_idx" in st.session_state and st.session_state["target_tab_idx"] is not None:
-        st.warning("🔔 **ACTION REQUIRED:** You have pending deletion requests below. Palihug tan-awa sa **🗑️ Pending Delete Approvals** tab.")
-        st.session_state["target_tab_idx"] = None
-
-    tabs = st.tabs(tabs_list)
-
-    with tabs[0]:
-        st.markdown(f"### 👤 Personal Encoding Panel ({user_name})")
-        
-        try:
-            if user_role in ["Superuser", "Admin"]:
-                df_my_entries = pd.read_sql_query(text("SELECT * FROM cases ORDER BY id DESC"), engine)
-                st.info("👑 **Super User Mode:** Displaying ALL encoded entries across the system.")
-            elif user_role == "Team Leader":
-                df_my_entries = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(province) = lower(:p) ORDER BY id DESC"), engine, params={"p": user_province})
-                st.info(f"🔰 **Team Leader Mode:** Displaying entries under **{user_province}** jurisdiction.")
-            else:
-                df_my_entries = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e) ORDER BY id DESC"), engine, params={"e": user_email})
-                st.info("🔒 **User Security Restriction:** Displaying STRICTLY your own encoded entries.")
-        except Exception:
-            df_my_entries = pd.DataFrame()
-
-        if not df_my_entries.empty:
-            st.success(f"📊 Total Personal Authorized Records: **{len(df_my_entries)} Beneficiaries**")
-            
-            st_filter = st.selectbox("🔍 Filter Display by Encoding Completion Status:", ["ALL", "Completed", "Incomplete / Draft"])
-            df_display = df_my_entries.copy()
-            if st_filter != "ALL" and 'profile_status' in df_display.columns:
-                df_display = df_display[df_display['profile_status'].astype(str).str.lower() == st_filter.lower()]
-                
-            st.dataframe(df_display, use_container_width=True)
-            
-            col_d1, col_d2 = st.columns([1, 1])
-            with col_d1:
-                my_excel_bytes = export_to_excel_bytes(df_my_entries)
-                st.download_button(
-                    label="📥 Download My Encoded Entries (.xlsx)",
-                    data=my_excel_bytes,
-                    file_name=f"My_Entries_{user_name}_{user_province}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-            
-            with col_d2:
-                exp_label = "🗑️ Direct Delete & Archive Entry" if user_role in ["Superuser", "Admin"] else "🗑️ Request to Delete an Entry"
-                with st.expander(exp_label):
-                    del_options = {f"ID #{row['id']} - [HHID: {row['control_no'] or 'N/A'}]: {row['first_name']} {row['last_name']}": (row['id'], row['control_no'], f"{row['first_name']} {row['last_name']}") for _, row in df_my_entries.iterrows()}
-                    selected_del = st.selectbox("Select Record to Process Deletion:", list(del_options.keys()))
-                    del_reason = st.text_area("State Reason for Deletion*:", placeholder="e.g. Duplicate entry / Incorrect client details")
-                    
-                    btn_label = "⚡ Direct Delete & Auto-Archive Now" if user_role in ["Superuser", "Admin"] else "📩 Submit Deletion Request to Admin"
-                    
-                    if st.button(btn_label, use_container_width=True):
-                        if del_reason.strip():
-                            req_case_id, req_hhid, req_cname = del_options[selected_del]
-                            req_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            try:
-                                if user_role in ["Superuser", "Admin"]:
-                                    df_raw = pd.read_sql_query(text("SELECT * FROM cases WHERE id = :id"), engine, params={"id": req_case_id})
-                                    raw_json = df_raw.to_json(orient="records") if not df_raw.empty else "{}"
-                                    
-                                    with engine.begin() as conn:
-                                        conn.execute(text("""
-                                            CREATE TABLE IF NOT EXISTS deleted_cases_archive (
-                                                archive_id SERIAL PRIMARY KEY,
-                                                original_case_id INT,
-                                                control_no VARCHAR(255),
-                                                client_name VARCHAR(255),
-                                                requested_by VARCHAR(255),
-                                                deletion_reason TEXT,
-                                                deleted_by VARCHAR(255),
-                                                archived_at VARCHAR(255),
-                                                raw_case_data_json TEXT
-                                            );
-                                        """))
-                                        conn.execute(
-                                            text("""
-                                                INSERT INTO deleted_cases_archive (original_case_id, control_no, client_name, requested_by, deletion_reason, deleted_by, archived_at, raw_case_data_json)
-                                                VALUES (:ocid, :cno, :cn, :rb, :dr, :db, :aat, :json)
-                                            """),
-                                            {"ocid": req_case_id, "cno": req_hhid, "cn": req_cname, "rb": user_email, "dr": del_reason.strip(), "db": user_email, "aat": req_date, "json": raw_json}
-                                        )
-                                        conn.execute(text("DELETE FROM cases WHERE id = :id"), {"id": req_case_id})
-                                        conn.execute(text("DELETE FROM family_members WHERE case_id = :id"), {"id": req_case_id})
-                                        conn.execute(text("DELETE FROM deceased_family_members WHERE case_id = :id"), {"id": req_case_id})
-                                        conn.execute(text("UPDATE deletion_requests SET status = 'APPROVED' WHERE case_id = :id"), {"id": req_case_id})
-                                    
-                                    st.toast("⚡ Record deleted & auto-backed up to Archive!", icon="📦")
-                                    st.success(f"✅ Success! Case #{req_case_id} ({req_cname}) has been permanently deleted and safely backed up to 'Deleted Cases Archive'.")
-                                    st.rerun()
-                                else:
-                                    with engine.begin() as conn:
-                                        conn.execute(
-                                            text("""
-                                                INSERT INTO deletion_requests (case_id, control_no, client_name, requested_by, reason, request_date, status)
-                                                VALUES (:cid, :hhid, :cn, :rb, :r, :rd, 'PENDING')
-                                            """),
-                                            {"cid": req_case_id, "hhid": req_hhid, "cn": req_cname, "rb": user_email, "r": del_reason.strip(), "rd": req_date}
-                                        )
-                                    st.toast("📩 Deletion request submitted to Admin!", icon="📩")
-                                    st.success(f"📩 Deletion request for ID #{req_case_id} submitted to Super Admin for approval in Tab 5!")
-                                    st.rerun()
-                            except Exception as ex:
-                                st.error(f"❌ DATABASE ERROR: {ex}")
-                        else:
-                            st.error("⚠️ Please provide a reason for the deletion.")
-        else:
-            st.info("No recorded beneficiary entries found under your user account.")
-
-    with tabs[1]:
-        try:
-            query = "SELECT * FROM cases WHERE 1=1"
-            params = {}
-            if user_role not in ["Superuser", "Admin"] and user_province not in ["RPMO", "CO"]:
-                if user_role == "Team Leader":
-                    query += " AND lower(province) = lower(:p)"
-                    params["p"] = user_province
-                else:
-                    query += " AND (lower(staff_email) = lower(:e) OR lower(encoded_by) = lower(:e))"
-                    params["e"] = user_email
-
-            query += " ORDER BY id DESC"
-            df_master = pd.read_sql_query(text(query), engine, params=params)
-        except Exception:
-            df_master = pd.DataFrame()
-
-        st.metric("Total Authorized Masterlist Records", len(df_master))
-        st.dataframe(df_master, use_container_width=True)
-
-    with tabs[2]:
-        st.markdown("### 📁 Reference AppSheet Database View & Module Migration")
-        if os.path.exists(appsheet_file):
-            df_app_ref = pd.read_excel(appsheet_file)
-            if user_role not in ["Superuser", "Admin"]:
-                staff_cols = [c for c in df_app_ref.columns if 'staff' in c.lower() or 'email' in c.lower() or 'encoder' in c.lower()]
-                if staff_cols:
-                    df_app_ref = df_app_ref[df_app_ref[staff_cols[0]].astype(str).str.contains(user_email, case=False, na=False)]
-            
-            st.dataframe(df_app_ref, use_container_width=True)
-
-            st.divider()
-            st.markdown("#### 🔄 Migrate / Edit Selected Record to Module (1-9)")
-            
-            col_mig1, col_mig2, col_mig3 = st.columns([3, 2, 2])
-            with col_mig1:
-                ref_options = {f"Row {idx+1}: {row.get('First Name', row.get('first_name', ''))} {row.get('Last Name', row.get('last_name', ''))}": idx for idx, row in df_app_ref.iterrows()} if not df_app_ref.empty else {}
-                selected_ref_row = st.selectbox("Select AppSheet Record to Migrate:", list(ref_options.keys()) if ref_options else ["No Records Found"])
-            
-            with col_mig2:
-                target_module_choice = st.selectbox("Select Destination Module:", ["1. Personal & Profiling", "2. Family & Health", "3. Prob & Assistance", "4. Infrastructure & Housing", "5. Agricultural Info", "6. Livelihood & Employment", "7. Psychosocial Support", "8. Capacity Building", "9. Assessment & Updates"])
-            
-            with col_mig3:
-                st.write("")
-                st.write("")
-                if st.button("🚀 Migrate & Auto-Fill Data", use_container_width=True):
-                    if ref_options and selected_ref_row in ref_options:
-                        row_idx = ref_options[selected_ref_row]
-                        row_data = df_app_ref.iloc[row_idx].to_dict()
-                        
-                        st.session_state["autofill_data"] = {
-                            "first_name": str(row_data.get("First Name", row_data.get("first_name", ""))),
-                            "last_name": str(row_data.get("Last Name", row_data.get("last_name", ""))),
-                            "middle_name": str(row_data.get("Middle Name", row_data.get("middle_name", ""))),
-                            "phone_no": str(row_data.get("Phone", row_data.get("phone_no", ""))),
-                            "province": str(row_data.get("Province", row_data.get("province", user_province))),
-                            "city_muni": str(row_data.get("City", row_data.get("city_muni", ""))),
-                            "barangay": str(row_data.get("Barangay", row_data.get("barangay", ""))),
-                            "control_no": str(row_data.get("Control No", row_data.get("control_no", "")))
-                        }
-                        
-                        st.session_state["redirect_to_module"] = target_module_choice[:2]
-                        st.toast("🚀 Data migrated successfully!", icon="✨")
-                        st.success(f"✅ Data migrated! Redirecting to Module {target_module_choice}...")
-                        st.rerun()
-        else:
-            st.info("No external AppSheet reference file loaded.")
-
-    with tabs[3]:
-        st.markdown("### 📥 Export Reports Control Portal")
-        try:
-            if user_role in ["Superuser", "Admin"]:
-                df_exp_final = pd.read_sql_query(text("SELECT * FROM cases"), engine)
-            elif user_role == "Team Leader":
-                df_exp_final = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(province) = lower(:p)"), engine, params={"p": user_province})
-            else:
-                df_exp_final = pd.read_sql_query(text("SELECT * FROM cases WHERE lower(encoded_by) = lower(:e) OR lower(staff_email) = lower(:e)"), engine, params={"e": user_email})
-        except Exception:
-            df_exp_final = pd.DataFrame()
-
-        if len(df_exp_final) == 0:
-            st.warning("⚠️ Access Restricted: Account currently has 0 encoded entries under your scope.")
-        else:
-            st.success(f"📊 Authorized Export Data Count: **{len(df_exp_final)} Records**")
-            excel_bytes = export_to_excel_bytes(df_exp_final)
+        ext = os.path.splitext(filename)[1].lower()
+        c_dl, c_info = st.columns([1, 2])
+        with c_dl:
             st.download_button(
-                label="📥 Download Authorized Masterlist Report (.xlsx)",
-                data=excel_bytes,
-                file_name=f"PDBBM_Report_{user_province}_{user_role}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+                label=f"⬇️ Download {filename}",
+                data=file_bytes,
+                file_name=filename,
+                key=f"dl_{key_prefix}_{filename}",
+                use_container_width=True,
             )
+        with c_info:
+            st.caption(f"Size: {len(file_bytes)/1024:.1f} KB")
 
-    if "🗑️ Pending Delete Approvals" in tabs_list:
-        pending_tab_idx = tabs_list.index("🗑️ Pending Delete Approvals")
-        with tabs[pending_tab_idx]:
-            st.markdown("### 🗑️ Super Admin Deletion Request Approvals")
-            try:
-                df_req = pd.read_sql_query(text("SELECT id, case_id AS 'Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', reason AS 'Reason for Deletion', request_date AS 'Request Date' FROM deletion_requests WHERE status = 'PENDING' ORDER BY id DESC"), engine)
-            except Exception:
-                df_req = pd.DataFrame()
-            
-            if not df_req.empty:
-                st.dataframe(df_req, use_container_width=True)
-                
-                req_dict = {f"Req #{r['id']} - Case #{r['Case ID']} ({r['Client Name']})": (r['id'], r['Case ID'], r['Client Name'], r['Household ID'], r['Requested By'], r['Reason for Deletion']) for _, r in df_req.iterrows()}
-                selected_req_key = st.selectbox("Select Pending Deletion Request to Act On:", list(req_dict.keys()))
-                
-                col_act1, col_act2 = st.columns(2)
-                req_id, c_id, c_name, c_hhid, c_req_by, c_reason = req_dict[selected_req_key]
-                
-                with col_act1:
-                    if st.button("✅ Approve & Auto-Backup to Archive", use_container_width=True):
-                        try:
-                            df_raw = pd.read_sql_query(text("SELECT * FROM cases WHERE id = :id"), engine, params={"id": c_id})
-                            raw_json = df_raw.to_json(orient="records") if not df_raw.empty else "{}"
-                            
-                            archived_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            with engine.begin() as conn:
-                                conn.execute(
-                                    text("""
-                                        INSERT INTO deleted_cases_archive (original_case_id, control_no, client_name, requested_by, deletion_reason, deleted_by, archived_at, raw_case_data_json)
-                                        VALUES (:ocid, :cno, :cn, :rb, :dr, :db, :aat, :json)
-                                    """),
-                                    {"ocid": c_id, "cno": c_hhid, "cn": c_name, "rb": c_req_by, "dr": c_reason, "db": user_email, "aat": archived_at, "json": raw_json}
-                                )
-                                conn.execute(text("DELETE FROM cases WHERE id = :id"), {"id": c_id})
-                                conn.execute(text("DELETE FROM family_members WHERE case_id = :id"), {"id": c_id})
-                                conn.execute(text("DELETE FROM deceased_family_members WHERE case_id = :id"), {"id": c_id})
-                                conn.execute(text("UPDATE deletion_requests SET status = 'APPROVED' WHERE id = :id"), {"id": req_id})
-                            
-                            st.toast("✅ Case deleted & backed up to Archive!", icon="📦")
-                            st.success(f"✅ Approved! Case #{c_id} ({c_name}) has been backed up to Archive and deleted from active database.")
-                            st.rerun()
-                        except Exception as ex:
-                            st.error(f"❌ DATABASE ERROR: {ex}")
+        if ext in [".png", ".jpg", ".jpeg"]:
+            st.image(file_bytes, caption=filename, use_container_width=True)
+        elif ext == ".pdf":
+            render_pdf_pages_in_app(file_bytes, key_prefix=key_prefix, filename=filename)
+        else:
+            st.info(f"ℹ️ Preview for `{ext}` is not inline; use the Download button above to open `{filename}`.")
+    else:
+        st.warning(
+            f"⚠️ **Not corrupted — record is intact**, but binary file `{filename}` is not on the current server disk or database vault "
+            f"(this happens for files uploaded prior to the vault update before a container restart)."
+        )
 
-                with col_act2:
-                    if st.button("❌ Reject Request", use_container_width=True):
-                        try:
-                            with engine.begin() as conn:
-                                conn.execute(text("UPDATE deletion_requests SET status = 'REJECTED' WHERE id = :id"), {"id": req_id})
-                            st.toast("❌ Deletion request rejected.", icon="🚫")
-                            st.info(f"❌ Deletion request for Case #{c_id} was rejected.")
-                            st.rerun()
-                        except Exception as ex:
-                            st.error(f"❌ DATABASE ERROR: {ex}")
-            else:
-                st.info("🎉 No pending deletion requests at this time.")
-
-    if "📦 Deleted Cases Archive" in tabs_list and user_role == "Superuser":
-        archive_tab_idx = tabs_list.index("📦 Deleted Cases Archive")
-        with tabs[archive_tab_idx]:
-            st.markdown("### 📦 Deleted Cases Recycle Bin & Archive (Auto-Backup)")
-            st.caption("ℹ️ **Auto-Purge Policy:** All archived records are automatically cleared after 30 days to optimize system database storage.")
-            try:
-                df_arch = pd.read_sql_query(text("SELECT archive_id AS 'Archive ID', original_case_id AS 'Original Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', deletion_reason AS 'Reason', deleted_by AS 'Approved By', archived_at AS 'Date Deleted' FROM deleted_cases_archive ORDER BY archive_id DESC"), engine)
-            except Exception:
-                df_arch = pd.DataFrame()
-            
-            if not df_arch.empty:
-                def calc_countdown(arch_date_str):
+        if record_row is not None and col_name and can_edit_record_row(current_role, module_label, record_row) and "id" in record_row:
+            with st.expander(f"📤 Re-Attach File for `{filename}` (Saves to Disk & Database Vault)"):
+                re_file = st.file_uploader(
+                    f"Choose file to restore `{filename}` (or attach replacement):",
+                    type=["pdf", "png", "jpg", "jpeg", "docx"],
+                    key=f"reattach_up_{key_prefix}_{filename}",
+                )
+                if re_file is not None and st.button(f"💾 Save File to Vault & Update Record", key=f"reattach_btn_{key_prefix}_{filename}", use_container_width=True):
                     try:
-                        dt = datetime.datetime.strptime(str(arch_date_str).strip(), "%Y-%m-%d %H:%M:%S")
-                        days_passed = (datetime.datetime.now() - dt).days
-                        rem = 30 - days_passed
-                        if rem > 5:
-                            return f"⏳ {max(0, rem)} Days Remaining"
-                        elif rem > 0:
-                            return f"⚠️ {rem} Days Left (Expiring Soon)"
-                        else:
-                            return "🚨 Expiring Today (Auto-Purge Pending)"
-                    except Exception:
-                        return "⏳ 30 Days Remaining"
+                        r_bytes = re_file.getvalue()
+                        disk_p = os.path.join("uploaded_movs", re_file.name)
+                        with open(disk_p, "wb") as f:
+                            f.write(r_bytes)
+                        persist_mov_to_vault(re_file.name, r_bytes, getattr(re_file, "type", ""))
 
-                df_arch['Retention Countdown (30-Day Limit)'] = df_arch['Date Deleted'].apply(calc_countdown)
-                
-                cols = ['Archive ID', 'Retention Countdown (30-Day Limit)', 'Original Case ID', 'Household ID', 'Client Name', 'Requested By', 'Reason', 'Approved By', 'Date Deleted']
-                df_arch = df_arch[[c for c in cols if c in df_arch.columns]]
-                
-                st.dataframe(df_arch, use_container_width=True)
-                
-                st.divider()
-                st.markdown("#### 🔄 Restore Accidental Deletion")
-                arch_options = {f"Archive #{r['Archive ID']} - {r['Client Name']} (HHID: {r['Household ID']})": r['Archive ID'] for _, r in df_arch.iterrows()}
-                selected_arch_id = st.selectbox("Select Deleted Record to Restore:", list(arch_options.keys()))
-                
-                if st.button("🔄 Restore Selected Record to Active Database", use_container_width=True):
-                    arch_id = arch_options[selected_arch_id]
-                    try:
-                        with engine.connect() as conn:
-                            res_json = conn.execute(text("SELECT raw_case_data_json FROM deleted_cases_archive WHERE archive_id = :id"), {"id": arch_id}).fetchone()
-                        if res_json and res_json[0]:
-                            df_res = pd.read_json(res_json[0], orient="records")
-                            if not df_res.empty:
-                                row_dict = df_res.iloc[0].to_dict()
-                                if 'id' in row_dict:
-                                    del row_dict['id']
-                                
-                                cols = list(row_dict.keys())
-                                placeholders = ", ".join([f":{k}" for k in cols])
-                                col_names = ", ".join(cols)
-                                
-                                with engine.begin() as conn:
-                                    conn.execute(text(f"INSERT INTO cases ({col_names}) VALUES ({placeholders})"), row_dict)
-                                    conn.execute(text("DELETE FROM deleted_cases_archive WHERE archive_id = :id"), {"id": arch_id})
-                                
-                                st.toast("🔄 Record restored back to active masterlist!", icon="🎉")
-                                st.success("✅ Record restored successfully back to active cases masterlist!")
-                                st.rerun()
+                        raw_curr = str(record_row.get(col_name) or "")
+                        parts = [p.strip() for p in raw_curr.split(",") if p.strip()]
+                        if filename in parts and re_file.name != filename:
+                            parts = [re_file.name if p == filename else p for p in parts]
+                        elif re_file.name not in parts:
+                            parts.append(re_file.name)
+                        new_col_val = ", ".join(parts)
+
+                        tbl_low = module_label.lower()
+                        rec_id = int(record_row["id"])
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text(f"UPDATE {tbl_low} SET {col_name} = :val WHERE id = :rid"),
+                                {"val": new_col_val, "rid": rec_id},
+                            )
+                        st.toast(f"✅ `{re_file.name}` saved to database vault!", icon="☁️")
+                        st.success(f"File `{re_file.name}` restored to vault and record updated!")
+                        st.rerun()
                     except Exception as ex:
-                        st.error(f"❌ DATABASE ERROR: {ex}")
+                        st.error(f"❌ Restore error: {ex}")
+
+def render_mov_inspector(df_rows, module_label):
+    """Displays MOVs tagsa-tagsa for authorized users (Superuser, MDM, or record encoder)."""
+    st.markdown("---")
+    st.subheader(f"🔎 MOV Inspector (Check Scanned Files One-by-One) — {module_label}")
+
+    if df_rows.empty:
+        st.info("No records available for MOV inspection.")
+        return
+
+    mov_cols_map = {
+        "Attendance": "mov_attendance",
+        "Minutes of Activity": "mov_minutes",
+        "Brgy Minutes": "mov_brgy_minutes",
+        "LGU Minutes": "mov_lgu_minutes",
+        "GRS Files": "mov_grs_files",
+        "CV Files": "mov_cv_files",
+        "Other Files": "mov_other_files",
+        "MOV File": "mov_file",
+        "Attachment": "attachment",
+    }
+    present_mov_cols = {lbl: col for lbl, col in mov_cols_map.items() if col in df_rows.columns}
+    if not present_mov_cols:
+        st.info("This table has no MOV file columns.")
+        return
+
+    options_map = {}
+    for idx, r in df_rows.iterrows():
+        rid = r.get("id", idx)
+        act = r.get("activity_name") or r.get("sp_name") or r.get("dv_number") or r.get("municipality") or "Record"
+        brgy = f" • {r.get('barangay')}" if "barangay" in r and pd.notna(r.get("barangay")) and str(r.get("barangay")).strip() else ""
+        cyc = f" [{r.get('cycle_batch')}]" if "cycle_batch" in r and pd.notna(r.get("cycle_batch")) else ""
+        enc = f" — by {r.get('encoded_by')}" if "encoded_by" in r and pd.notna(r.get("encoded_by")) else ""
+        label = f"ID #{rid} | {act}{brgy}{cyc}{enc}"
+        options_map[label] = (rid, r.to_dict())
+
+    sel_label = st.selectbox("Select Record to Inspect MOVs:", list(options_map.keys()), key=f"mov_sel_{module_label}")
+    sel_rid, sel_row = options_map[sel_label]
+
+    if not can_view_movs(current_role, sel_row):
+        st.warning("🔒 MOV viewing is restricted to Superuser, MDM, or the user who encoded this record.")
+        return
+
+    all_files = []
+    for slot_lbl, col_name in present_mov_cols.items():
+        for fname in parse_mov_filenames(sel_row.get(col_name)):
+            all_files.append((slot_lbl, col_name, fname))
+
+    if not all_files:
+        st.info("No uploaded MOV files found for this selected record.")
+        return
+
+    st.success(f"📂 Found **{len(all_files)}** uploaded MOV file(s) for `{sel_label}`.")
+    file_choice_labels = [f"[{i+1}/{len(all_files)}] {slot}: {fname}" for i, (slot, _, fname) in enumerate(all_files)]
+    chosen_idx = st.selectbox("Choose MOV File to View (Tagas-tagsa):", range(len(all_files)), format_func=lambda i: file_choice_labels[i], key=f"mov_file_pick_{module_label}_{sel_rid}")
+    chosen_slot, chosen_col, chosen_fname = all_files[chosen_idx]
+    st.caption(f"Category: **{chosen_slot}** (`{chosen_col}`)")
+    render_single_mov_file(
+        chosen_fname,
+        key_prefix=f"insp_{module_label}_{sel_rid}_{chosen_idx}",
+        record_row=sel_row,
+        module_label=module_label,
+        col_name=chosen_col,
+    )
+
+def serialize_record_payload(row_dict):
+    clean = {}
+    for k, v in row_dict.items():
+        if pd.isna(v):
+            clean[k] = None
+        elif isinstance(v, (datetime.date, datetime.datetime, pd.Timestamp)):
+            clean[k] = str(v)
+        else:
+            clean[k] = v
+    return json.dumps(clean)
+
+def submit_deletion_request(table_low, row_dict, reason_text):
+    rid = row_dict.get("id")
+    summary_parts = [
+        f"Table: {table_low}",
+        f"ID: {rid}",
+    ]
+    for k in ["activity_name", "sp_name", "sp_title", "dv_number", "municipality", "barangay", "cycle_batch"]:
+        if k in row_dict and row_dict[k] is not None and str(row_dict[k]).strip() != "":
+            summary_parts.append(f"{k}={row_dict[k]}")
+    rec_summary = " | ".join(summary_parts)
+    payload_json = serialize_record_payload(row_dict)
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO deletion_requests (source_table, record_id, record_summary, record_payload, requested_by, requester_role, reason, status)
+                VALUES (:st, :rid, :sum, :pay, :req_by, :req_role, :rsn, 'Pending')
+            """),
+            {
+                "st": table_low,
+                "rid": int(rid),
+                "sum": rec_summary,
+                "pay": payload_json,
+                "req_by": current_user_name,
+                "req_role": current_role,
+                "rsn": reason_text.strip() or "No reason provided",
+            },
+        )
+
+def purge_expired_archives():
+    """Auto-purges archived records past their 30-day retention date."""
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM archived_records WHERE auto_purge_at <= CURRENT_TIMESTAMP"))
+    except Exception:
+        pass
+
+purge_expired_archives()
+
+# ---------------------------------------------------------
+# 4. POLISHED SIDEBAR NAVIGATION & LOGO WITH DEVELOPER CREDIT
+# ---------------------------------------------------------
+if logo_file:
+    st.sidebar.image(logo_file, width=220)
+
+st.sidebar.markdown(f"**Logged User:** `{st.session_state['user_name']}`")
+st.sidebar.markdown(f"**Email:** `{st.session_state['user_email']}`")
+st.sidebar.markdown(f"**System Role:** <span class='role-badge'>{st.session_state['user_role']}</span>", unsafe_allow_html=True)
+
+col_side_btn1, col_side_btn2 = st.sidebar.columns(2)
+with col_side_btn1:
+    if st.button("🔄 Refresh Data", use_container_width=True):
+        st.cache_data.clear()
+        st.toast("🔄 System cache refreshed successfully!", icon="✨")
+        st.rerun()
+with col_side_btn2:
+    if st.button("🚪 Logout", use_container_width=True):
+        st.session_state["logged_in"] = False
+        st.session_state["user_email"] = None
+        st.session_state["user_role"] = None
+        st.session_state["user_name"] = None
+        st.rerun()
+
+with st.sidebar.expander("🔑 Change My Password"):
+    with st.form("self_change_pass_pamana"):
+        old_p = st.text_input("Current Password*", type="password")
+        new_p1 = st.text_input("New Password*", type="password")
+        new_p2 = st.text_input("Confirm New Password*", type="password")
+        if st.form_submit_button("Update Password", use_container_width=True):
+            if new_p1 == new_p2 and new_p1 != "":
+                with engine.connect() as conn:
+                    res_p = conn.execute(
+                        text("SELECT password FROM user_accounts WHERE lower(email) = lower(:e)"),
+                        {"e": st.session_state["user_email"]},
+                    ).fetchone()
+                if res_p and res_p[0] == old_p:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text("UPDATE user_accounts SET password = :p, require_change_pass = 0, temp_pass_created_at = NULL WHERE lower(email) = lower(:e)"),
+                            {"p": new_p1, "e": st.session_state["user_email"]},
+                        )
+                    st.toast("✅ Password updated successfully!", icon="🔑")
+                    st.success("✅ Password successfully updated!")
+                else:
+                    st.error("❌ Incorrect current password.")
             else:
-                st.info("No archived deleted records found.")
+                st.error("⚠️ Passwords do not match or empty.")
 
-# ==========================================
-# USER MANAGEMENT MODULE (SUPERUSER LIVE MONITORING INCLUDED)
-# ==========================================
-elif menu_selection == "👥 User Management" and user_role == "Superuser":
-    st.subheader("👥 Superuser Panel: User Account Management & Live Login Monitor")
+st.sidebar.markdown("---")
+st.sidebar.title("📌 System Navigation")
+selected_view = st.sidebar.radio("Select Active Module:", TABS)
 
-    if "generated_pass" not in st.session_state:
-        st.session_state["generated_pass"] = generate_random_password()
+st.sidebar.markdown("---")
+st.sidebar.markdown(
+    """
+    <div style="text-align: center; font-size: 0.8em; color: #CBD5E1;">
+        💻 <b>System Developer & Architect</b><br>
+        Developed with ❤️ by <br><b style="color:#00E6FF;">LOUIE B. IDULSA - PDBBM ITO I</b><br>
+        <i>DSWD FO X - PAMANA CDPD © 2026</i>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+c_hdr1, c_hdr2 = st.columns([3, 1])
+with c_hdr1:
+    st.markdown(
+        """
+        <div class="hero-banner">
+            <div class="main-title">🕊️ PAMANA Peace & Development Program System</div>
+            <div class="sub-title">✨ Community-Driven Peace and Development (CDPD) Live Executive Analytics Suite</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+with c_hdr2:
+    if logo_file:
+        st.image(logo_file, width=210)
+
+st.markdown("---")
+
+# ---------------------------------------------------------
+# 5. EXECUTIVE DASHBOARD
+# ---------------------------------------------------------
+if selected_view == "Executive Dashboard":
+    df_sp = load_db_table("sub_project_closeout_tracker")
+    df_disb = load_db_table("disbursement")
+    df_ceac_muni = load_db_table("ceac_municipal")
+    df_ceac_brgy = load_db_table("ceac_barangay")
+
+    st.markdown('<span class="section-pill">⚡ EXECUTIVE SNAPSHOT</span>', unsafe_allow_html=True)
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        st.metric("Total Sub-Projects", len(df_sp) if not df_sp.empty else 0)
+    with col2:
+        tot_disb = df_disb["amount"].sum() if not df_disb.empty and "amount" in df_disb.columns else 0
+        st.metric("Total Disbursed", f"₱{tot_disb:,.2f}")
+    with col3:
+        tot_hh = df_sp["actual_hhs"].sum() if not df_sp.empty and "actual_hhs" in df_sp.columns else 0
+        st.metric("Actual HHs Benefited", f"{tot_hh:,.0f}")
+    with col4:
+        tot_male = df_sp["male_beneficiaries"].sum() if not df_sp.empty and "male_beneficiaries" in df_sp.columns else 0
+        st.metric("Male Beneficiaries", f"{tot_male:,.0f}")
+    with col5:
+        tot_female = df_sp["female_beneficiaries"].sum() if not df_sp.empty and "female_beneficiaries" in df_sp.columns else 0
+        st.metric("Female Beneficiaries", f"{tot_female:,.0f}")
+
+    st.markdown("---")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("📊 Sub-Project Closeout Status")
+        if not df_sp.empty and "overall_closeout_status" in df_sp.columns:
+            sp_status_series = clean_label_series(df_sp["overall_closeout_status"], "Unspecified")
+            sp_status_df = sp_status_series.value_counts().reset_index()
+            sp_status_df.columns = ["Status", "Count"]
+            fig_status = build_pie_chart(sp_status_df, names_col="Status", values_col="Count", height=340)
+            st.plotly_chart(fig_status, use_container_width=True)
+        else:
+            st.info("No closeout status records found.")
+
+    with c2:
+        st.subheader("👥 Beneficiary Gender Breakdown")
+        if not df_sp.empty and "male_beneficiaries" in df_sp.columns and "female_beneficiaries" in df_sp.columns:
+            m_sum = df_sp["male_beneficiaries"].sum()
+            f_sum = df_sp["female_beneficiaries"].sum()
+            fig_gender = build_pie_chart(
+                pd.DataFrame({"Gender": ["Male", "Female"], "Count": [m_sum, f_sum]}),
+                names_col="Gender",
+                values_col="Count",
+                color_map={"Male": "#0F2A4A", "Female": "#0284C7"},
+                height=340,
+            )
+            st.plotly_chart(fig_gender, use_container_width=True)
+        else:
+            st.info("No beneficiary records found.")
+
+    st.markdown("---")
+    st.markdown('<span class="section-pill">📊 LIVE CEAC ANALYTICS</span>', unsafe_allow_html=True)
+    st.subheader("🏛️ CEAC Activities Overview (Municipal & Barangay)")
+
+    muni_cnt = len(df_ceac_muni) if not df_ceac_muni.empty else 0
+    brgy_cnt = len(df_ceac_brgy) if not df_ceac_brgy.empty else 0
+    tot_ceac = muni_cnt + brgy_cnt
+
+    mov_done_cnt = 0
+    if not df_ceac_muni.empty and "mov_status" in df_ceac_muni.columns:
+        mov_done_cnt += int((df_ceac_muni["mov_status"].astype(str).str.strip().str.upper() == "COMPLETED & UPLOADED").sum())
+    if not df_ceac_brgy.empty and "mov_status" in df_ceac_brgy.columns:
+        mov_done_cnt += int((df_ceac_brgy["mov_status"].astype(str).str.strip().str.upper() == "COMPLETED & UPLOADED").sum())
+
+    cc1, cc2, cc3, cc4 = st.columns(4)
+    with cc1:
+        st.metric("Municipal CEAC Activities", muni_cnt)
+    with cc2:
+        st.metric("Barangay CEAC Activities", brgy_cnt)
+    with cc3:
+        st.metric("Total CEAC Logged", tot_ceac)
+    with cc4:
+        st.metric("MOV Completed & Uploaded", mov_done_cnt)
+
+    cm_col1, cm_col2 = st.columns(2)
+    with cm_col1:
+        st.markdown("##### 📍 CEAC Barangay Activities by Type")
+        if not df_ceac_brgy.empty and "activity_name" in df_ceac_brgy.columns:
+            brgy_act_series = clean_label_series(df_ceac_brgy["activity_name"], "Unspecified")
+            brgy_counts = brgy_act_series.value_counts().reset_index()
+            brgy_counts.columns = ["Activity", "Count"]
+            fig_cb = build_pie_chart(brgy_counts, names_col="Activity", values_col="Count", height=320)
+            st.plotly_chart(fig_cb, use_container_width=True)
+        else:
+            st.info("No CEAC Barangay records found.")
+
+    with cm_col2:
+        st.markdown("##### 🏢 CEAC Municipal Activities by Type")
+        if not df_ceac_muni.empty and "activity_name" in df_ceac_muni.columns:
+            muni_act_series = clean_label_series(df_ceac_muni["activity_name"], "Unspecified")
+            muni_counts = muni_act_series.value_counts().reset_index()
+            muni_counts.columns = ["Activity", "Count"]
+            fig_cm = build_pie_chart(muni_counts, names_col="Activity", values_col="Count", height=320)
+            st.plotly_chart(fig_cm, use_container_width=True)
+        else:
+            st.info("No CEAC Municipal records found.")
+
+    anim_frames = []
+    if not df_ceac_brgy.empty and "activity_name" in df_ceac_brgy.columns:
+        ab = pd.DataFrame({
+            "Level": "Barangay",
+            "Cycle": clean_label_series(df_ceac_brgy["cycle_batch"], "Unspecified Cycle") if "cycle_batch" in df_ceac_brgy.columns else "All Cycles",
+            "activity_name": clean_label_series(df_ceac_brgy["activity_name"], "Unspecified"),
+        })
+        anim_frames.append(ab)
+    if not df_ceac_muni.empty and "activity_name" in df_ceac_muni.columns:
+        am = pd.DataFrame({
+            "Level": "Municipal",
+            "Cycle": clean_label_series(df_ceac_muni["cycle_batch"], "Unspecified Cycle") if "cycle_batch" in df_ceac_muni.columns else "All Cycles",
+            "activity_name": clean_label_series(df_ceac_muni["activity_name"], "Unspecified"),
+        })
+        anim_frames.append(am)
+
+    if anim_frames:
+        df_anim_src = pd.concat(anim_frames, ignore_index=True)
+        df_anim_grp = (
+            df_anim_src.groupby(["Cycle", "Level", "activity_name"], as_index=False)
+            .size()
+            .rename(columns={"size": "Activities"})
+        )
+        if not df_anim_grp.empty:
+            df_anim_grp = df_anim_grp.sort_values(by="Activities", ascending=False)
+            st.markdown("##### 🥧 CEAC Activity Share by Cycle & Level")
+            df_anim_grp["Label"] = df_anim_grp["activity_name"] + " (" + df_anim_grp["Level"] + " • " + df_anim_grp["Cycle"] + ")"
+            fig_anim = build_pie_chart(df_anim_grp, names_col="Label", values_col="Activities", height=340)
+            st.plotly_chart(fig_anim, use_container_width=True)
+
+    recent_frames = []
+    if not df_ceac_brgy.empty:
+        tmp_b = df_ceac_brgy.copy()
+        tmp_b["Level"] = "Barangay"
+        if "barangay" in tmp_b.columns and "municipality" in tmp_b.columns:
+            tmp_b["Location"] = tmp_b["barangay"].fillna("") + ", " + tmp_b["municipality"].fillna("")
+        elif "municipality" in tmp_b.columns:
+            tmp_b["Location"] = tmp_b["municipality"].fillna("")
+        else:
+            tmp_b["Location"] = ""
+        recent_frames.append(tmp_b)
+
+    if not df_ceac_muni.empty:
+        tmp_m = df_ceac_muni.copy()
+        tmp_m["Level"] = "Municipal"
+        tmp_m["Location"] = tmp_m["municipality"].fillna("") if "municipality" in tmp_m.columns else ""
+        recent_frames.append(tmp_m)
+
+    if recent_frames:
+        df_ceac_all = pd.concat(recent_frames, ignore_index=True)
+        sort_col = "date_encoded" if "date_encoded" in df_ceac_all.columns else ("id" if "id" in df_ceac_all.columns else None)
+        if sort_col:
+            df_ceac_all = df_ceac_all.sort_values(by=sort_col, ascending=False)
+        keep_cols = [c for c in ["Level", "activity_name", "Location", "cycle_batch", "activity_date", "mov_status", "encoded_status", "encoded_by"] if c in df_ceac_all.columns]
+        st.markdown("##### 🕒 Recent CEAC Activities Feed")
+        st.dataframe(df_ceac_all[keep_cols].head(10), use_container_width=True, hide_index=True)
+
+# ---------------------------------------------------------
+# 5B. DELETE REQUESTS & 30-DAY AUTO-ARCHIVE (SUPERUSER ONLY)
+# ---------------------------------------------------------
+elif selected_view == "Delete Requests & 30-Day Archive":
+    if current_role != "Superuser":
+        st.error("⛔ ACCESS DENIED: Only Superuser can approve deletion requests or manage the 30-day archive.")
+        st.stop()
+
+    st.subheader("🗑️ Deletion Requests Approval & 30-Day Auto-Archive")
+    st.caption("Approved records are moved to archive and auto-purged after 30 days (SCMS-style retention).")
+
+    tab_req, tab_arch = st.tabs(["⏳ Pending / Reviewed Deletion Requests", "🗄️ 30-Day Archive Vault"])
+
+    with tab_req:
+        df_reqs = load_db_table("deletion_requests")
+        if df_reqs.empty:
+            st.info("No deletion requests found.")
+        else:
+            pending_df = df_reqs[df_reqs["status"] == "Pending"] if "status" in df_reqs.columns else df_reqs
+            st.markdown(f"##### Pending Approval ({len(pending_df)})")
+            if not pending_df.empty:
+                for _, req_r in pending_df.iterrows():
+                    req_id = int(req_r["id"])
+                    src_tbl = str(req_r["source_table"])
+                    rec_id = int(req_r["record_id"])
+                    st.markdown(f"**Request #{req_id}** — `{req_r.get('record_summary', '')}`")
+                    st.caption(f"Requested by: **{req_r.get('requested_by')}** ({req_r.get('requester_role')}) | Reason: *{req_r.get('reason')}*")
+                    c_ap, c_rj = st.columns(2)
+                    with c_ap:
+                        if st.button("✅ Approve & Archive (30 Days)", key=f"app_del_{req_id}", use_container_width=True):
+                            try:
+                                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                                purge_dt = now_utc + datetime.timedelta(days=ARCHIVE_RETENTION_DAYS)
+                                with engine.begin() as conn:
+                                    conn.execute(
+                                        text("""
+                                            INSERT INTO archived_records (source_table, original_record_id, record_summary, record_payload, requested_by, approved_by, archived_at, auto_purge_at)
+                                            VALUES (:st, :orid, :sum, :pay, :reqby, :appby, :arch, :prg)
+                                        """),
+                                        {
+                                            "st": src_tbl,
+                                            "orid": rec_id,
+                                            "sum": req_r.get("record_summary", ""),
+                                            "pay": req_r.get("record_payload", "{}"),
+                                            "reqby": req_r.get("requested_by", ""),
+                                            "appby": current_user_name,
+                                            "arch": now_utc,
+                                            "prg": purge_dt,
+                                        },
+                                    )
+                                    conn.execute(text(f"DELETE FROM {src_tbl} WHERE id = :rid"), {"rid": rec_id})
+                                    conn.execute(
+                                        text("""
+                                            UPDATE deletion_requests
+                                            SET status = 'Approved', reviewed_by = :rb, reviewed_at = :ra
+                                            WHERE id = :reqid
+                                        """),
+                                        {"rb": current_user_name, "ra": now_utc, "reqid": req_id},
+                                    )
+                                st.toast("✅ Approved and archived for 30 days!", icon="🗄️")
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(f"❌ Error approving deletion: {ex}")
+                    with c_rj:
+                        if st.button("❌ Reject Request", key=f"rej_del_{req_id}", use_container_width=True):
+                            try:
+                                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                                with engine.begin() as conn:
+                                    conn.execute(
+                                        text("""
+                                            UPDATE deletion_requests
+                                            SET status = 'Rejected', reviewed_by = :rb, reviewed_at = :ra
+                                            WHERE id = :reqid
+                                        """),
+                                        {"rb": current_user_name, "ra": now_utc, "reqid": req_id},
+                                    )
+                                st.toast("Request rejected.", icon="❌")
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(f"❌ Error rejecting request: {ex}")
+                    st.markdown("---")
+            else:
+                st.success("No pending deletion requests.")
+
+            st.markdown("##### All Deletion Requests History")
+            show_cols = [c for c in ["id", "status", "source_table", "record_id", "record_summary", "requested_by", "reason", "reviewed_by", "reviewed_at"] if c in df_reqs.columns]
+            st.dataframe(df_reqs[show_cols], use_container_width=True, hide_index=True)
+
+    with tab_arch:
+        df_arch = load_db_table("archived_records")
+        if df_arch.empty:
+            st.info("Archive vault is empty.")
+        else:
+            st.markdown(f"##### Archived Records ({len(df_arch)}) — Auto-Purge after 30 Days")
+            disp_cols = [c for c in ["id", "source_table", "original_record_id", "record_summary", "requested_by", "approved_by", "archived_at", "auto_purge_at"] if c in df_arch.columns]
+            st.dataframe(df_arch[disp_cols], use_container_width=True, hide_index=True)
+
+            arch_ids = df_arch["id"].tolist()
+            sel_arch_id = st.selectbox("Select Archived Entry ID:", arch_ids, key="sel_arch_id_box")
+            sel_arch_row = df_arch[df_arch["id"] == sel_arch_id].iloc[0]
+
+            c_rst, c_prg = st.columns(2)
+            with c_rst:
+                if st.button("♻️ Restore Record Back to Active Table", key="btn_restore_arch", use_container_width=True):
+                    try:
+                        payload = json.loads(sel_arch_row["record_payload"])
+                        src_tbl = str(sel_arch_row["source_table"])
+                        payload.pop("id", None)
+                        if payload:
+                            cols_str = ", ".join(payload.keys())
+                            vals_str = ", ".join([f":{k}" for k in payload.keys()])
+                            with engine.begin() as conn:
+                                conn.execute(text(f"INSERT INTO {src_tbl} ({cols_str}) VALUES ({vals_str})"), payload)
+                                conn.execute(text("DELETE FROM archived_records WHERE id = :aid"), {"aid": int(sel_arch_id)})
+                            st.toast("✅ Record restored!", icon="♻️")
+                            st.success("Record restored to active table.")
+                            st.rerun()
+                    except Exception as ex:
+                        st.error(f"❌ Restore failed: {ex}")
+            with c_prg:
+                if st.button("🔥 Purge Immediately from Archive", key="btn_purge_arch", use_container_width=True):
+                    try:
+                        with engine.begin() as conn:
+                            conn.execute(text("DELETE FROM archived_records WHERE id = :aid"), {"aid": int(sel_arch_id)})
+                        st.toast("Purged from archive.", icon="🔥")
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"❌ Purge failed: {ex}")
+
+# ---------------------------------------------------------
+# 6. USER MANAGEMENT PORTAL (SUPERUSER ONLY - ALL ACCOUNTS INCLUDED)
+# ---------------------------------------------------------
+elif selected_view == "User Management Portal":
+    if current_role != "Superuser":
+        st.error("⛔ ACCESS DENIED: Only Superuser can access the User Management Portal.")
+        st.stop()
+
+    st.subheader("👤 System User Management & Live Login Monitor")
+
+    if "gen_temp_pass" not in st.session_state:
+        st.session_state["gen_temp_pass"] = generate_random_password()
+
+    USER_ROLES_LIST = ["Superuser", "Admin", "AC", "TF", "MFA", "MDM", "CEF"]
 
     st.markdown("##### 🔴 Live System User Login Activity & Audit Log:")
 
     @st.cache_data(ttl=10)
-    def fetch_scms_users_fast():
-        ex_emails = tuple(e.lower() for e in EXCLUDED_CDPD_EMAILS)
+    def fetch_users_fast():
         with engine.connect() as conn:
             return conn.execute(
-                text("""
-                    SELECT id, first_name || ' ' || last_name AS name, email, user_role, last_login 
-                    FROM user_accounts 
-                    WHERE lower(email) NOT IN :ex_emails
-                    ORDER BY last_login DESC NULLS LAST LIMIT 50
-                """),
-                {"ex_emails": ex_emails}
+                text("SELECT id, full_name, email, user_role, last_login FROM user_accounts ORDER BY last_login DESC NULLS LAST LIMIT 50")
             ).fetchall()
 
     try:
-        active_logs = fetch_scms_users_fast()
+        active_logs = fetch_users_fast()
     except Exception:
         active_logs = []
 
@@ -1838,9 +1560,9 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
         with col_act1:
             st.markdown("###### **Recently Active Users / Login Sessions:**")
             for u in active_logs[:5]:
-                u_name = u[1] if u[1] else u[2]
+                u_name = u[1] if (u[1] and str(u[1]).lower() != "none") else u[2]
                 last_time = format_ph_time(u[4])
-                is_curr = "🟢 CURRENT SESSION ONLINE" if u[2] == user_email else f"🕒 Last Online: {last_time}"
+                is_curr = "🟢 CURRENT SESSION ONLINE" if u[2] == st.session_state["user_email"] else f"🕒 Last Online: {last_time}"
 
                 st.markdown(
                     f"""
@@ -1854,123 +1576,129 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
                 )
 
         with col_act2:
-            st.info(f"📊 **Total System Accounts:** `{len(active_logs)}` Users\n\n🛡️ **Superuser Privileges:** Live real-time login timestamp monitoring active (Asia/Manila PST).")
+            st.info(f"📊 **Total Accounts:** `{len(active_logs)}` Users\n\n🛡️ **Superuser Privileges:** Live real-time login timestamp monitoring active (Asia/Manila PST).")
 
-    st.divider()
+    st.markdown("---")
 
-    col_user_a, col_user_b = st.columns(2)
-    with col_user_a:
-        st.markdown("##### ➕ Register New System User")
-        with st.form("create_user_form", clear_on_submit=True):
-            u_fname = st.text_input("First Name*")
-            u_lname = st.text_input("Last Name / Family Name*")
-            u_role = st.selectbox("Type of User (Role)", ["User", "Team Leader", "Admin", "Superuser"])
-            u_province = st.selectbox("Province Jurisdiction", PROVINCES_LIST)
-            u_email = st.text_input("User Email Address*").strip()
-            
-            curr_gen_pass = st.session_state["generated_pass"]
-            st.text_input("Generated Temporary Password:", value=curr_gen_pass, disabled=True)
+    col_u1, col_u2 = st.columns(2)
+
+    with col_u1:
+        st.markdown("##### ➕ Add New System User")
+        with st.form("add_user_form", clear_on_submit=True):
+            new_fullname = st.text_input("Full Name*")
+            new_email = st.text_input("User Email Address*").strip()
+            new_role = st.selectbox("Assigned Role*", USER_ROLES_LIST)
+
+            curr_temp_pass = st.session_state["gen_temp_pass"]
+            st.text_input("Generated Temporary Password (Auto):", value=curr_temp_pass, disabled=True)
             send_via_email = st.checkbox("📧 Send Credentials via Direct Email to User", value=True)
-            
-            submit_user = st.form_submit_button("➕ Register User", use_container_width=True)
+
+            submit_user = st.form_submit_button("💾 Create User Account", use_container_width=True)
             if submit_user:
-                if u_fname and u_lname and u_email:
+                if new_fullname and new_email:
                     try:
                         now_utc = datetime.datetime.now(datetime.timezone.utc)
                         with engine.begin() as conn:
+                            conn.execute(text("SELECT setval(pg_get_serial_sequence('user_accounts', 'id'), COALESCE(MAX(id), 1)) FROM user_accounts;"))
                             conn.execute(
-                                text("INSERT INTO user_accounts (first_name, last_name, province, user_role, email, password, require_change_pass, temp_pass_created_at) VALUES (:fn, :ln, :p, :r, :e, :pass, 1, :tca)"),
-                                {"fn": u_fname, "ln": u_lname, "p": u_province, "r": u_role, "e": u_email, "pass": curr_gen_pass, "tca": now_utc}
+                                text("INSERT INTO user_accounts (full_name, email, password, user_role, require_change_pass, temp_pass_created_at) VALUES (:fn, :e, :p, :r, 1, :tca)"),
+                                {"fn": new_fullname, "e": new_email, "p": curr_temp_pass, "r": new_role, "tca": now_utc},
                             )
-                        st.toast(f"✅ User {u_fname} registered!", icon="👤")
-                        st.success(f"✅ Registered user: {u_fname} {u_lname} ({u_role})!")
-                        
+
+                        st.toast(f"✅ User '{new_fullname}' created!", icon="👤")
+                        st.success(f"✅ User '{new_fullname}' ({new_role}) successfully created!")
+
                         if send_via_email:
-                            sent_ok, msg_res = send_credentials_email(u_email, f"{u_fname} {u_lname}", curr_gen_pass, u_role)
+                            sent_ok, msg_res = send_credentials_email(new_email, new_fullname, curr_temp_pass, new_role)
                             if sent_ok:
-                                st.success(f"📩 Account credentials emailed directly to {u_email}! (Temp pass expires in 24 hours)")
+                                st.success(f"📩 Account credentials emailed directly to {new_email}! (Temp pass expires in 24 hours)")
                             else:
                                 st.warning(f"⚠️ Email dispatch status: {msg_res}")
-                                st.info(f"🔑 **BACKUP DISPLAY PASS:** `{curr_gen_pass}` (Expires in 24 hours)")
+                                st.info(f"🔑 **BACKUP DISPLAY PASS:** `{curr_temp_pass}` (Expires in 24 hours)")
                         else:
-                            st.info(f"🔑 **USER TEMPORARY PASS:** `{curr_gen_pass}` (Expires in 24 hours)")
-                                
-                        st.session_state["generated_pass"] = generate_random_password()
+                            st.info(f"🔑 **USER TEMPORARY PASS:** `{curr_temp_pass}` (Expires in 24 hours)")
+
+                        st.session_state["gen_temp_pass"] = generate_random_password()
                         st.rerun()
                     except Exception as ex:
-                        st.error(f"⚠️ Error creating user: {ex}")
+                        st.error(f"⚠️ Error creating user account: {ex}")
                 else:
-                    st.error("Please fill in First Name, Last Name, and Email Address.")
+                    st.error("Please fill in Full Name and Email Address.")
 
-    with col_user_b:
+    with col_u2:
         st.markdown("##### 🔑 Reset User Password (with Live Search)")
-        user_search_term = st.text_input("🔍 Search User Name or Email:")
-        
-        ex_emails_list = tuple(e.lower() for e in EXCLUDED_CDPD_EMAILS)
-        query_u = "SELECT id, first_name, last_name, email, user_role FROM user_accounts WHERE user_role IN ('User', 'Team Leader', 'Admin', 'Superuser') AND lower(email) NOT IN :ex_emails"
-        params_u = {"ex_emails": ex_emails_list}
-        if user_search_term:
-            query_u += " AND (lower(first_name) LIKE lower(:s) OR lower(last_name) LIKE lower(:s) OR lower(email) LIKE lower(:s))"
-            params_u["s"] = f"%{user_search_term.strip()}%"
-            
-        try:
-            with engine.connect() as conn:
-                u_list = conn.execute(text(query_u), params_u).fetchall()
-        except Exception:
-            u_list = []
-        
+        user_search = st.text_input("🔍 Search User Name or Email:")
+
+        query_u = "SELECT id, full_name, email, user_role FROM user_accounts WHERE lower(email) != lower(:curr_user)"
+        params_u = {"curr_user": st.session_state["user_email"]}
+
+        if user_search:
+            query_u += " AND (lower(full_name) LIKE lower(:s) OR lower(email) LIKE lower(:s))"
+            params_u["s"] = f"%{user_search.strip()}%"
+
+        with engine.connect() as conn:
+            u_list = conn.execute(text(query_u), params_u).fetchall()
+
         if u_list:
-            u_dict = {f"{r[1]} {r[2]} ({r[3]}) - [{r[4]}]": (r[0], r[3], f"{r[1]} {r[2]}", r[4]) for r in u_list}
-            selected_reset_user = st.selectbox("Select Filtered User Account:", list(u_dict.keys()))
-            send_reset_via_email = st.checkbox("📧 Email New Password Directly to User", value=True, key="reset_mail_chk")
-            
+            u_dict = {f"{r[1] or r[2]} ({r[2]}) - [{r[3]}]": (r[0], r[2], r[1] or r[2], r[3]) for r in u_list}
+            selected_reset = st.selectbox("Select Filtered User Account:", list(u_dict.keys()))
+            send_reset_mail = st.checkbox("📧 Email New Password Directly to User", value=True, key="rst_m_chk")
+
             if st.button("🔄 Reset Password Now", use_container_width=True):
-                res_id, res_email, res_full_name, res_role = u_dict[selected_reset_user]
-                new_temp_pass = generate_random_password()
+                r_id, r_email, r_name, r_role = u_dict[selected_reset]
+                new_temp = generate_random_password()
                 now_utc = datetime.datetime.now(datetime.timezone.utc)
+
                 try:
                     with engine.begin() as conn:
-                        conn.execute(text("UPDATE user_accounts SET password = :p, require_change_pass = 1, temp_pass_created_at = :tca WHERE id = :id"), {"p": new_temp_pass, "tca": now_utc, "id": res_id})
+                        conn.execute(
+                            text("UPDATE user_accounts SET password = :p, require_change_pass = 1, temp_pass_created_at = :tca WHERE id = :id"),
+                            {"p": new_temp, "tca": now_utc, "id": r_id},
+                        )
+
                     st.toast("🔑 Password reset initiated!", icon="🔐")
-                    st.success(f"✅ Reset Password initiated for {res_email}!")
-                    
-                    if send_reset_via_email:
-                        sent_ok, msg_res = send_credentials_email(res_email, res_full_name, new_temp_pass, res_role)
+                    st.success(f"✅ Reset Password initiated for {r_email}!")
+
+                    if send_reset_mail:
+                        sent_ok, msg_res = send_credentials_email(r_email, r_name, new_temp, r_role)
                         if sent_ok:
-                            st.success(f"📩 Reset password emailed directly to {res_email}! (Temp pass expires in 24 hours)")
+                            st.success(f"📩 Reset password emailed directly to {r_email}! (Temp pass expires in 24 hours)")
                         else:
                             st.warning(f"⚠️ Email dispatch status: {msg_res}")
-                            st.info(f"🔑 **BACKUP RESET PASS:** `{new_temp_pass}` (Expires in 24 hours)")
+                            st.info(f"🔑 **BACKUP RESET PASS:** `{new_temp}` (Expires in 24 hours)")
                     else:
-                        st.info(f"🔑 **NEW TEMPORARY PASS:** `{new_temp_pass}` (Expires in 24 hours)")
+                        st.info(f"🔑 **NEW TEMPORARY PASS:** `{new_temp}` (Expires in 24 hours)")
                 except Exception as ex:
                     st.error(f"❌ DATABASE ERROR: {ex}")
-            
-            st.divider()
+
+            st.markdown("---")
             st.markdown("##### ✏️ Direct Set Custom Password (Manual Fix)")
-            manual_custom_pass = st.text_input("Enter Manual Password for Selected User:", key="man_pass_scms").strip()
-            if st.button("💾 Set Exact Custom Password", use_container_width=True, key="btn_set_man_scms"):
+            manual_custom_pass = st.text_input("Enter Manual Password for Selected User:", key="man_pass_in").strip()
+            if st.button("💾 Set Exact Custom Password", use_container_width=True, key="btn_set_man_pass"):
                 if manual_custom_pass:
-                    res_id, res_email, res_full_name, res_role = u_dict[selected_reset_user]
+                    r_id, r_email, r_name, r_role = u_dict[selected_reset]
                     try:
                         with engine.begin() as conn:
-                            conn.execute(text("UPDATE user_accounts SET password = trim(:p), require_change_pass = 0, temp_pass_created_at = NULL WHERE id = :id"), {"p": manual_custom_pass, "id": res_id})
+                            conn.execute(
+                                text("UPDATE user_accounts SET password = trim(:p), require_change_pass = 0, temp_pass_created_at = NULL WHERE id = :id"),
+                                {"p": manual_custom_pass, "id": r_id},
+                            )
                         st.toast("✅ Custom password updated!", icon="🔑")
-                        st.success(f"✅ Password for {res_email} manually set to: `{manual_custom_pass}`!")
+                        st.success(f"✅ Password for {r_email} manually set to: `{manual_custom_pass}`! (Direct Login Enabled, no password change required)")
                     except Exception as ex:
                         st.error(f"❌ DATABASE ERROR: {ex}")
                 else:
                     st.error("Palihug sulati ang manual password.")
         else:
-            st.warning("No users match your search criteria.")
+            st.info("No matching users found.")
 
-    st.divider()
+    st.markdown("---")
     st.subheader("📋 Registered Users Masterlist & Login Timestamps")
+    
     try:
         df_users = pd.read_sql_query(
-            text("SELECT id, first_name || ' ' || last_name AS Name, email AS Email, user_role AS Role, province AS Province, require_change_pass, temp_pass_created_at, last_login FROM user_accounts WHERE user_role IN ('Superuser', 'Admin', 'Team Leader', 'User') AND lower(email) NOT IN :ex_emails ORDER BY id DESC"),
-            engine,
-            params={"ex_emails": tuple(e.lower() for e in EXCLUDED_CDPD_EMAILS)}
+            text("SELECT id, full_name, email, user_role, require_change_pass, temp_pass_created_at, last_login FROM user_accounts ORDER BY id DESC"),
+            engine
         )
         if not df_users.empty:
             if "last_login" in df_users.columns:
@@ -1979,19 +1707,19 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
                 df_users["temp_pass_created_at"] = df_users["temp_pass_created_at"].apply(format_ph_time)
         st.dataframe(df_users, use_container_width=True, hide_index=True)
 
-        st.divider()
-        with st.expander("⚙️ Superuser Action Panel (Delete User Account)"):
-            u_del_list = df_users[df_users["Email"].str.lower() != user_email.lower()]["id"].tolist() if "id" in df_users.columns else []
+        st.markdown("---")
+        with st.expander("⚙️ Superuser Action Panel (Delete / Remove User Account)"):
+            u_del_list = df_users[df_users["email"].str.lower() != st.session_state["user_email"].lower()]["id"].tolist() if "id" in df_users.columns else []
             if u_del_list:
-                sel_del_uid = st.selectbox("Select User ID to Delete from Database:", u_del_list, key="sel_del_uid_scms")
+                sel_del_uid = st.selectbox("Select User ID to Delete from Database:", u_del_list, key="sel_del_uid_box")
                 u_info_row = df_users[df_users["id"] == sel_del_uid].iloc[0]
-                st.warning(f"⚠️ Imong idelete si **{u_info_row.get('Name', '')}** (`{u_info_row.get('Email', '')}`).")
-                if st.button("🗑️ Permanently Delete User Account", use_container_width=True, key="btn_del_scms_user"):
+                st.warning(f"⚠️ Imong idelete si **{u_info_row.get('full_name', '')}** (`{u_info_row.get('email', '')}`).")
+                if st.button("🗑️ Permanently Delete User Account", use_container_width=True, key="btn_del_user_acct"):
                     try:
                         with engine.begin() as conn:
                             conn.execute(text("DELETE FROM user_accounts WHERE id = :id"), {"id": sel_del_uid})
                         st.cache_data.clear()
-                        st.toast("✅ User account removed!", icon="🗑️")
+                        st.toast("✅ User account removed from database!", icon="🗑️")
                         st.success("User account deleted successfully!")
                         st.rerun()
                     except Exception as ex:
@@ -2001,11 +1729,1020 @@ elif menu_selection == "👥 User Management" and user_role == "Superuser":
     except Exception:
         pass
 
-st.divider()
+# ---------------------------------------------------------
+# 7. GEOTAGGED PHOTOS MODULE (PERMANENT BASE64 STORAGE)
+# ---------------------------------------------------------
+elif selected_view == "Geotagged_Photos":
+    st.subheader("📸 Geotagged Photos & Progress File Uploads")
+
+    if can_edit_module(current_role, "Geotagged_Photos"):
+        with st.expander("📤 Upload New Geotagged Photo", expanded=True):
+            uploaded_file = st.file_uploader("Choose Photo / File (JPG / PNG)", type=["jpg", "jpeg", "png", "pdf"], key="geo_upl_file")
+
+            st.info("💡 **Note:** You can use timestamp photos/images to detect Latitude and Longitude.")
+
+            detected_lat, detected_lon = "", ""
+            if uploaded_file and uploaded_file.type in ["image/jpeg", "image/png"]:
+                exif_lat, exif_lon = extract_gps_from_image(uploaded_file)
+                if exif_lat and exif_lon:
+                    detected_lat, detected_lon = exif_lat, exif_lon
+                    st.success(f"⚡ **AUTO-DETECTED GPS EXIF METADATA:** Latitude: `{detected_lat}` | Longitude: `{detected_lon}`")
+                else:
+                    st.warning("⚠️ No EXIF GPS metadata found in photo. Attempting live browser location or manual entry...")
+                    if HAS_GEO_EVAL:
+                        location = get_geolocation()
+                        if location and "coords" in location:
+                            detected_lat = str(round(location["coords"]["latitude"], 6))
+                            detected_lon = str(round(location["coords"]["longitude"], 6))
+                            st.info(f"🌐 **BROWSER LIVE GPS DETECTED:** Latitude: `{detected_lat}` | Longitude: `{detected_lon}`")
+
+            with st.form("photo_upload_form", clear_on_submit=True):
+                col_u1, col_u2 = st.columns(2)
+                with col_u1:
+                    sp_id = st.text_input("Sub-Project ID / Code (Put 'N/A' if no SP ID)*")
+                    sp_name = st.text_input("Sub-Project Name")
+                    stage = st.selectbox("Stage", ["BEFORE Construction", "DURING Construction", "AFTER / Completed"])
+                    latitude = st.text_input("Latitude (GPS)*", value=detected_lat)
+                with col_u2:
+                    longitude = st.text_input("Longitude (GPS)*", value=detected_lon)
+                    st.caption("📷 File preview or auto-detected metadata will reflect automatically.")
+
+                submit_photo = st.form_submit_button("⬆️ Submit & Save Photo")
+                if submit_photo:
+                    if not uploaded_file or not sp_id.strip():
+                        st.error("⚠️ **REQUIRED FIELDS MISSING:** Palihug mag-upload og file ug isulat ang Sub-Project ID (o 'N/A')!")
+                    else:
+                        try:
+                            file_path = os.path.join("uploaded_photos", uploaded_file.name)
+                            with open(file_path, "wb") as f:
+                                f.write(uploaded_file.getbuffer())
+
+                            b64_img = convert_image_to_base64(uploaded_file)
+
+                            with engine.begin() as conn:
+                                conn.execute(
+                                    text("""
+                                        INSERT INTO geotagged_photos (sp_id, sp_name, stage, latitude, longitude, photo_file, date_uploaded, encoder, image_base64)
+                                        VALUES (:sp_id, :sp_name, :stage, :lat, :lon, :file, CURRENT_DATE, :encoder, :b64)
+                                    """),
+                                    {
+                                        "sp_id": sp_id.strip(), "sp_name": sp_name, "stage": stage,
+                                        "lat": latitude, "lon": longitude, "file": uploaded_file.name,
+                                        "encoder": st.session_state["user_name"],
+                                        "b64": b64_img
+                                    },
+                                )
+
+                            st.toast("✅ Geotagged photo saved permanently to Supabase!", icon="📸")
+                            st.success(f"Photo '{uploaded_file.name}' saved to database successfully!")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(f"❌ DATABASE ERROR: {ex}")
+    else:
+        st.info(f"👁️ **VIEW-ONLY MODE:** Your assigned role (`{current_role}`) is restricted from uploading new photos in this module.")
+
+    st.markdown("---")
+    
+    col_gal_hdr, col_gal_btn = st.columns([3, 1])
+    with col_gal_hdr:
+        st.subheader("🖼️ Geotagged Photos Gallery & Interactive Viewer")
+    with col_gal_btn:
+        if st.button("🔄 Refresh Photos / Reload Gallery", use_container_width=True, key="btn_refresh_photos"):
+            st.cache_data.clear()
+            st.toast("⚡ Gallery Refreshed!", icon="🔄")
+            st.rerun()
+
+    df_photos = load_db_table("geotagged_photos")
+
+    if not df_photos.empty:
+        sp_filter = st.text_input("🔍 Search Photo by Sub-Project ID, Name, or Stage:", "", key="photo_search_input")
+        df_p_filtered = df_photos.copy()
+        
+        if sp_filter:
+            mask = df_p_filtered.astype(str).apply(lambda row: row.str.contains(sp_filter, case=False).any(), axis=1)
+            df_p_filtered = df_p_filtered[mask]
+
+        if not df_p_filtered.empty:
+            st.markdown("##### 📷 Uploaded Photos Cards Grid:")
+            cols = st.columns(3)
+            
+            for idx, (_, row) in enumerate(df_p_filtered.iterrows()):
+                col_target = cols[idx % 3]
+                p_file_name = row.get("photo_file", "")
+                p_path = os.path.join("uploaded_photos", str(p_file_name)) if p_file_name else ""
+                b64_val = row.get("image_base64", None)
+
+                with col_target:
+                    st.markdown(f"**📌 {row.get('sp_name', 'Sub-Project')}**")
+                    st.caption(f"🆔 **SP ID:** `{row.get('sp_id', 'N/A')}` | 🏗️ **Stage:** `{row.get('stage', 'N/A')}`")
+
+                    rot_deg = st.selectbox(
+                        f"🔄 Rotate Photo ({row.get('id', idx)})",
+                        options=[0, 90, 180, 270],
+                        format_func=lambda x: f"Original (0°)" if x == 0 else f"Rotate {x}°",
+                        key=f"rot_{row.get('id', idx)}"
+                    )
+
+                    if pd.notna(b64_val) and str(b64_val).startswith("data:image"):
+                        st.image(b64_val, use_container_width=True, caption=f"📸 File: {p_file_name}")
+                    elif p_path and os.path.exists(p_path):
+                        try:
+                            img_obj = Image.open(p_path)
+                            if rot_deg > 0:
+                                img_obj = img_obj.rotate(360 - rot_deg, expand=True)
+
+                            st.image(img_obj, use_container_width=True, caption=f"📸 File: {p_file_name}")
+                        except Exception:
+                            st.warning(f"⚠️ Photo file '{p_file_name}' cannot be opened.")
+                    else:
+                        st.warning(f"⚠️ **Photo File Missing on Server:** `{p_file_name}`\n\n*(Palihug i-upload usab ang litrato para ma-store na kini sa Database)*")
+
+                    st.markdown(f"📍 **GPS:** `{row.get('latitude', '')}, {row.get('longitude', '')}`")
+                    st.caption(f"👤 Encoder: {row.get('encoder', 'N/A')} | 📅 Date: {row.get('date_uploaded', 'N/A')}")
+                    st.markdown("---")
+        else:
+            st.info("No matching geotagged photo records found.")
+
+        st.markdown("---")
+        st.subheader("📋 Raw Geotagged Photos Database Masterlist")
+        st.dataframe(df_photos, use_container_width=True)
+
+        if "id" in df_photos.columns:
+            with st.expander("⚙️ Photo Record Action Panel (Request Delete / Superuser Archive)"):
+                photo_ids = df_photos["id"].tolist()
+                sel_pid = st.selectbox("Select Photo Record ID:", photo_ids, key="sel_pid_m")
+                p_row_dict = df_photos[df_photos["id"] == sel_pid].iloc[0].to_dict()
+                if current_role == "Superuser":
+                    if st.button("🗄️ Archive & Delete Photo Record (30-Day Retention)", use_container_width=True, key="del_photo_btn"):
+                        try:
+                            now_utc = datetime.datetime.now(datetime.timezone.utc)
+                            purge_dt = now_utc + datetime.timedelta(days=ARCHIVE_RETENTION_DAYS)
+                            with engine.begin() as conn:
+                                conn.execute(
+                                    text("""
+                                        INSERT INTO archived_records (source_table, original_record_id, record_summary, record_payload, requested_by, approved_by, archived_at, auto_purge_at)
+                                        VALUES ('geotagged_photos', :orid, :sum, :pay, :reqby, :appby, :arch, :prg)
+                                    """),
+                                    {
+                                        "orid": int(sel_pid),
+                                        "sum": f"geotagged_photos | ID={sel_pid} | {p_row_dict.get('sp_name', '')} | {p_row_dict.get('photo_file', '')}",
+                                        "pay": serialize_record_payload(p_row_dict),
+                                        "reqby": current_user_name,
+                                        "appby": current_user_name,
+                                        "arch": now_utc,
+                                        "prg": purge_dt,
+                                    },
+                                )
+                                conn.execute(text("DELETE FROM geotagged_photos WHERE id = :id"), {"id": sel_pid})
+                            st.toast("✅ Photo archived for 30 days!", icon="🗄️")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(f"❌ ERROR: {ex}")
+                elif current_role != "CEF":
+                    del_reason = st.text_input("Reason for Delete Request:", key="p_del_reason")
+                    if st.button("📤 Submit Delete Request to Superuser", use_container_width=True, key="req_del_photo_btn"):
+                        try:
+                            submit_deletion_request("geotagged_photos", p_row_dict, del_reason)
+                            st.toast("📤 Delete request sent to Superuser!", icon="📨")
+                            st.success("Deletion request submitted for Superuser approval.")
+                        except Exception as ex:
+                            st.error(f"❌ ERROR: {ex}")
+    else:
+        st.info("No geotagged photos uploaded yet.")
+
+# ---------------------------------------------------------
+# 8. FINANCE MODULE (EXCLUSIVE MONITORING EVALUATION REPORT DISPLAY)
+# ---------------------------------------------------------
+elif selected_view == "Finance":
+    st.subheader("💰 Finance - Monitoring Evaluation Report")
+    st.caption("Live Synchronization Viewer • Official Executive Finance Tracking")
+
+    sheet_url = "https://docs.google.com/spreadsheets/d/1d_QZrY3tF6wajFQiOx5yTtv55_GyrIYW/edit?gid=1476863389#gid=1476863389"
+    embed_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT51CpWr5YaWUkDCfJYmUCAFduSjlC8Nlbxqb2DGceLH2CuaQ9EIOva6HRVj5ikVQ/pubhtml?gid=1476863389&single=true&widget=false&headers=false"
+
+    c_f1, c_f2 = st.columns([3, 1])
+    with c_f1:
+        st.info("📊 **Monitoring Evaluation Report**: Showing primary MER sheet view. If display restrictions occur due to browser security settings, please use the button to launch the sheet in a new browser tab.")
+    with c_f2:
+        st.link_button("🔗 Open Full Google Sheet", sheet_url, use_container_width=True)
+
+    st.markdown("---")
+    
+    try:
+        st.markdown(
+            f"""
+            <iframe src="{embed_url}" width="100%" height="780" style="border: 1px solid #CBD5E1; border-radius: 8px; background-color: #FFFFFF;" allowfullscreen></iframe>
+            """,
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        st.warning("⚠️ Google Sheet preview restricted. Please click the button above to access the sheet directly.")
+
+# ---------------------------------------------------------
+# 9. SP PROFILE MODULE (OPTIMIZED FORM - REDUNDANCIES REMOVED)
+# ---------------------------------------------------------
+elif selected_view == "SP_Profile":
+    st.subheader("📊 SP Profile Management Module")
+
+    has_edit_perm = can_edit_module(current_role, "SP_Profile")
+
+    if has_edit_perm:
+        if st.button("➕ Add New SP Profile Record", use_container_width=True):
+            st.session_state["show_add_spi"] = not st.session_state.get("show_add_spi", False)
+
+        if st.session_state.get("show_add_spi", True):
+            with st.expander("📝 Clean Entry Form: SP Profile (Optimized & Non-Redundant Fields)", expanded=True):
+                with st.form("form_add_spi_masterlist"):
+                    spi_data = {}
+
+                    st.markdown("#### 1. Basic Sub-Project Profile & Category")
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        spi_data["spid"] = st.text_input("Sub-Project ID (SPID)*", key="spi_spid")
+                        spi_data["sp_title"] = st.text_input("Sub-Project Title*", key="spi_sptitle")
+                        spi_data["major_category"] = st.text_input("Major Category", key="spi_majcat")
+                    with c2:
+                        spi_data["project_type"] = st.text_input("Project Type", key="spi_ptype")
+                        spi_data["no_of_package"] = st.number_input("No. of Packages", min_value=0, step=1, key="spi_nopack")
+                    with c3:
+                        spi_data["total_awarded"] = st.number_input("Total Awarded (₱)", min_value=0.0, key="spi_taward")
+                        spi_data["total_delivered"] = st.number_input("Total Delivered (₱)", min_value=0.0, key="spi_tdeliv")
+
+                    st.markdown("---")
+                    st.markdown("#### 2. Project Cost, Grants & Tranches")
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        spi_data["kcgrant_amountmibf"] = st.number_input("KC Grant Amount MIBF (₱)", min_value=0.0, key="spi_kcg")
+                        spi_data["lcc_amount_mibf"] = st.number_input("LCC Amount MIBF (₱)", min_value=0.0, key="spi_lcca")
+                        spi_data["lcc_actual_amount"] = st.number_input("LCC Actual Amount (₱)", min_value=0.0, key="spi_lccact")
+                        spi_data["operation_maintainance_cost"] = st.number_input("Operation & Maintenance Cost (₱)", min_value=0.0, key="spi_omc")
+                    with c2:
+                        spi_data["final_grant_amount_mibf"] = st.number_input("Final Grant Amount MIBF (₱)", min_value=0.0, key="spi_fgrant")
+                        spi_data["final_lcc_amount_mibf"] = st.number_input("Final LCC Amount MIBF (₱)", min_value=0.0, key="spi_flcc")
+                        spi_data["total_release"] = st.number_input("Total Release (₱)", min_value=0.0, key="spi_totrel")
+                        spi_data["gross_utilization"] = st.number_input("Gross Utilization (₱)", min_value=0.0, key="spi_gutil")
+                    with c3:
+                        spi_data["first_tranche_actual_btf"] = st.number_input("1st Tranche BTF (₱)", min_value=0.0, key="spi_t1")
+                        spi_data["date_downloaded_trans_1"] = st.date_input("1st Tranche Date", datetime.date.today(), key="spi_t1d").strftime("%Y-%m-%d")
+                        spi_data["second_tranche_actual_btf"] = st.number_input("2nd Tranche BTF (₱)", min_value=0.0, key="spi_t2")
+                        spi_data["date_downloaded_trans_2"] = st.date_input("2nd Tranche Date", datetime.date.today(), key="spi_t2d").strftime("%Y-%m-%d")
+                        spi_data["third_tranche_actual_btf"] = st.number_input("3rd Tranche BTF (₱)", min_value=0.0, key="spi_t3")
+                        spi_data["date_downloaded_trans_3"] = st.date_input("3rd Tranche Date", datetime.date.today(), key="spi_t3d").strftime("%Y-%m-%d")
+                        spi_data["gross_liquidation"] = st.number_input("Gross Liquidation (₱)", min_value=0.0, key="spi_gliq")
+                        spi_data["refunded"] = st.number_input("Refunded Amount (₱)", min_value=0.0, key="spi_ref")
+
+                    st.markdown("---")
+                    st.markdown("#### 3. Physical Accomplishment & Timeline Status")
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        spi_data["date_started"] = st.date_input("Date Started", datetime.date.today(), key="spi_ds").strftime("%Y-%m-%d")
+                        spi_data["date_of_completion"] = st.date_input("Date of Completion", datetime.date.today(), key="spi_dc").strftime("%Y-%m-%d")
+                        spi_data["planned_date_of_completion"] = st.date_input("Planned Date of Completion", datetime.date.today(), key="spi_pdc").strftime("%Y-%m-%d")
+                        spi_data["final_date_of_completion"] = st.date_input("Final Date of Completion", datetime.date.today(), key="spi_fdc").strftime("%Y-%m-%d")
+                        spi_data["final_date_of_completion_v2"] = st.date_input("Final Date of Completion V2", datetime.date.today(), key="spi_fdcv2").strftime("%Y-%m-%d")
+                    with c2:
+                        spi_data["physical_accomplishment_percentage_original_pow"] = st.number_input("Physical Accomplishment % (Original POW)", min_value=0.0, max_value=100.0, key="spi_pa_pow")
+                        spi_data["physical_status_original_pow"] = st.text_input("Physical Status (Original POW)", key="spi_ps_pow")
+                        spi_data["physical_accomplishment_percentage_as_per_vo"] = st.number_input("Physical Accomplishment % (VO)", min_value=0.0, max_value=100.0, key="spi_pa_vo")
+                        spi_data["date_of_completion_as_per_vo"] = st.date_input("Completion Date (per VO)", datetime.date.today(), key="spi_dc_vo").strftime("%Y-%m-%d")
+                    with c3:
+                        spi_data["final_physical_status"] = st.selectbox("Final Physical Status", ["Completed", "On-going", "For Implementation", "Cancelled"], key="spi_fps")
+                        spi_data["final_physical_accomplishment"] = st.number_input("Final Physical Accomplishment %", min_value=0.0, max_value=100.0, key="spi_fpa")
+                        spi_data["has_variation_order"] = "Yes" if st.checkbox("Has Variation Order?", key="spi_c_vo") else "No"
+
+                    st.markdown("---")
+                    st.markdown("#### 4. Specialized Program Beneficiary Breakdown (IP, Pantawid & SLP)")
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        spi_data["no_of_ip_household_bene_target"] = st.number_input("Target IP HH Beneficiaries", min_value=0, step=1, key="spi_tip_hh")
+                        spi_data["no_of_families_beneficiaries_target"] = st.number_input("Target Family Beneficiaries", min_value=0, step=1, key="spi_tfam")
+                        spi_data["no_of_families_beneficiaries_actual"] = st.number_input("Actual Family Beneficiaries", min_value=0, step=1, key="spi_afam")
+                    with c2:
+                        spi_data["no_actual_pantawid_households"] = st.number_input("Actual Pantawid HHs", min_value=0, step=1, key="spi_pthh")
+                        spi_data["no_actual_pantawid_families"] = st.number_input("Actual Pantawid Families", min_value=0, step=1, key="spi_ptfam")
+                        spi_data["no_actual_slp_households"] = st.number_input("Actual SLP HHs", min_value=0, step=1, key="spi_slphh")
+                        spi_data["no_actual_slp_families"] = st.number_input("Actual SLP Families", min_value=0, step=1, key="spi_slpfam")
+                    with c3:
+                        spi_data["no_actual_ip_households"] = st.number_input("Actual IP HHs", min_value=0, step=1, key="spi_ip_hh")
+                        spi_data["no_actual_ip_families"] = st.number_input("Actual IP Families", min_value=0, step=1, key="spi_ip_fam")
+
+                    st.markdown("---")
+                    st.markdown("#### 5. Safeguards & Land Acquisition Documents")
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        spi_data["has_turnover_certificate"] = "Yes" if st.checkbox("Has Turnover Certificate?", key="spi_c_toc") else "No"
+                        spi_data["with_ip_presence"] = "Yes" if st.checkbox("With IP Presence?", key="spi_c_ipp") else "No"
+                        spi_data["with_esmp"] = "Yes" if st.checkbox("With ESMP?", key="spi_c_esmp") else "No"
+                        spi_data["with_essc"] = "Yes" if st.checkbox("With ESSC?", key="spi_c_essc") else "No"
+                        spi_data["with_cnc"] = "Yes" if st.checkbox("With CNC?", key="spi_c_cnc") else "No"
+                        spi_data["with_cadt"] = "Yes" if st.checkbox("With CADT?", key="spi_c_cadt") else "No"
+                        spi_data["with_ecc"] = "Yes" if st.checkbox("With ECC?", key="spi_c_ecc") else "No"
+                        spi_data["on_process"] = "Yes" if st.checkbox("Safeguards On Process?", key="spi_c_proc") else "No"
+                    with c2:
+                        spi_data["land_acq_with_deed_of_donation"] = "Yes" if st.checkbox("Deed of Donation?", key="spi_c_dod") else "No"
+                        spi_data["land_aq_with_unsfruct"] = "Yes" if st.checkbox("Usufruct Agreement?", key="spi_c_usu") else "No"
+                        spi_data["land_acq_with_right_of_way_agreement"] = "Yes" if st.checkbox("Right of Way Agreement?", key="spi_c_row") else "No"
+                        spi_data["land_acq_with_quit_claim"] = "Yes" if st.checkbox("Quit Claim?", key="spi_c_qc") else "No"
+                        spi_data["land_acq_with_permit_to_construc_enter"] = "Yes" if st.checkbox("Permit to Construct / Enter?", key="spi_c_pce") else "No"
+                        spi_data["land_acq_with_blgu_resolution"] = "Yes" if st.checkbox("BLGU Resolution?", key="spi_c_blgu") else "No"
+                        spi_data["land_acq_with_deped_certification"] = "Yes" if st.checkbox("DepEd Certification?", key="spi_c_deped") else "No"
+                        spi_data["land_acq_with_other_permit_clearance"] = "Yes" if st.checkbox("Other Permits / Clearances?", key="spi_c_operm") else "No"
+                        spi_data["sps_with_land_acquisition_documents"] = "Yes" if st.checkbox("SPs with Land Acquisition Docs?", key="spi_c_ladoc") else "No"
+                    with c3:
+                        spi_data["submitted_request_validation_ncip_sps_with_ip_population"] = "Yes" if st.checkbox("Submitted Request Validation NCIP?", key="spi_c_ncip_req") else "No"
+                        spi_data["validation_conducted_for_sps_with_ip_population"] = "Yes" if st.checkbox("Validation Conducted NCIP?", key="spi_c_ncip_val") else "No"
+                        spi_data["with_cp_for_sps_with_ip_population"] = "Yes" if st.checkbox("With Certificate Precondition (CP)?", key="spi_c_cp") else "No"
+                        spi_data["with_cno_for_sps_with_ip_population"] = "Yes" if st.checkbox("With Certificate of Non-Overlap (CNO)?", key="spi_c_cno") else "No"
+                        spi_data["with_cp_or_with_cno_for_sps_with_ip_population"] = "Yes" if st.checkbox("With CP or CNO?", key="spi_c_cpcno") else "No"
+                        spi_data["created_date"] = datetime.date.today().strftime("%Y-%m-%d")
+                        spi_data["created_by"] = st.session_state["user_name"]
+
+                    st.markdown("---")
+                    save_spi_btn = st.form_submit_button("💾 Save SP Profile Record to Database", use_container_width=True)
+
+                    if save_spi_btn:
+                        if not spi_data.get("spid") or not spi_data.get("sp_title"):
+                            st.error("⚠️ **REQUIRED FIELDS MISSING:** Palihug sulati ang Sub-Project ID (SPID) ug Sub-Project Title!")
+                        else:
+                            col_names_str = ", ".join(spi_data.keys())
+                            placeholders = ", ".join([f":{k}" for k in spi_data.keys()])
+                            try:
+                                with engine.begin() as conn:
+                                    conn.execute(
+                                        text(f"INSERT INTO spi_masterlist ({col_names_str}) VALUES ({placeholders})"),
+                                        spi_data,
+                                    )
+                                st.toast("✅ SP Profile record saved to Supabase!", icon="🎉")
+                                st.success("Record saved successfully!")
+                                st.session_state["show_add_spi"] = False
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(f"❌ DATABASE ERROR: {ex}")
+    else:
+        st.info(f"👁️ **VIEW-ONLY MODE:** Your assigned role (`{current_role}`) is restricted from adding or editing records in SP Profile.")
+
+    st.markdown("---")
+    st.subheader("📊 SP Profile Master Database Table")
+
+    df_spi = load_db_table("spi_masterlist")
+    search_spi = st.text_input("🔍 Search SP Profile Records:", "", key="spi_search_kw")
+    df_spi_filtered = df_spi.copy()
+
+    if search_spi and not df_spi_filtered.empty:
+        mask = df_spi_filtered.astype(str).apply(lambda row: row.str.contains(search_spi, case=False).any(), axis=1)
+        df_spi_filtered = df_spi_filtered[mask]
+
+    if not df_spi_filtered.empty:
+        can_sync_spi = (current_role == "Superuser") or has_edit_perm
+
+        edited_spi_df = st.data_editor(
+            df_spi_filtered,
+            use_container_width=True,
+            num_rows="dynamic" if can_sync_spi else "fixed",
+            disabled=not can_sync_spi,
+            key="editor_sp_profile",
+        )
+
+        if can_sync_spi and st.button("💾 Sync Table Changes to Database", key="sync_btn_spi"):
+            try:
+                with engine.begin() as conn:
+                    edited_spi_df.to_sql("spi_masterlist", conn, if_exists="replace", index=False)
+                st.toast("✅ SP Profile Table synchronized to Supabase!", icon="🎉")
+                st.success("Database synchronized successfully!")
+                st.rerun()
+            except Exception as ex:
+                st.error(f"❌ DATABASE ERROR: {ex}")
+
+        if "id" in df_spi_filtered.columns:
+            st.markdown("---")
+            with st.expander("⚙️ Record Action Panel (Edit / Request Delete / Superuser Archive in SP Profile)"):
+                row_ids = df_spi_filtered["id"].tolist()
+                selected_row_id = st.selectbox("Select Row ID:", row_ids, key="sel_id_sp_profile")
+                row_data = df_spi_filtered[df_spi_filtered["id"] == selected_row_id].iloc[0].to_dict()
+                allow_row_edit = can_edit_record_row(current_role, "SP_Profile", row_data)
+
+                col_btn1, col_btn2 = st.columns(2)
+                with col_btn1:
+                    if allow_row_edit and st.button("✏️ Edit Selected Record", use_container_width=True, key="btn_edit_sp_profile"):
+                        st.session_state["editing_id_sp_profile"] = selected_row_id
+                    elif not allow_row_edit:
+                        st.caption("Edit restricted to record owner or Superuser.")
+
+                with col_btn2:
+                    if current_role == "Superuser":
+                        if st.button("🗄️ Archive & Delete Record (30-Day Retention)", use_container_width=True, key="btn_del_sp_profile"):
+                            try:
+                                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                                purge_dt = now_utc + datetime.timedelta(days=ARCHIVE_RETENTION_DAYS)
+                                with engine.begin() as conn:
+                                    conn.execute(
+                                        text("""
+                                            INSERT INTO archived_records (source_table, original_record_id, record_summary, record_payload, requested_by, approved_by, archived_at, auto_purge_at)
+                                            VALUES ('spi_masterlist', :orid, :sum, :pay, :reqby, :appby, :arch, :prg)
+                                        """),
+                                        {
+                                            "orid": int(selected_row_id),
+                                            "sum": f"spi_masterlist | ID={selected_row_id} | {row_data.get('sp_title', '')}",
+                                            "pay": serialize_record_payload(row_data),
+                                            "reqby": current_user_name,
+                                            "appby": current_user_name,
+                                            "arch": now_utc,
+                                            "prg": purge_dt,
+                                        },
+                                    )
+                                    conn.execute(text("DELETE FROM spi_masterlist WHERE id = :id"), {"id": selected_row_id})
+                                st.toast("✅ Archived for 30 days!", icon="🗄️")
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(f"❌ DATABASE ERROR: {ex}")
+                    elif current_role != "CEF":
+                        req_reason = st.text_input("Reason for Delete Request:", key="spi_del_reason")
+                        if st.button("📤 Request Delete (Needs Superuser Approval)", use_container_width=True, key="btn_req_del_sp_profile"):
+                            try:
+                                submit_deletion_request("spi_masterlist", row_data, req_reason)
+                                st.toast("📤 Delete request submitted!", icon="📨")
+                                st.success("Deletion request sent to Superuser for approval.")
+                            except Exception as ex:
+                                st.error(f"❌ DATABASE ERROR: {ex}")
+
+                if st.session_state.get("editing_id_sp_profile") == selected_row_id and allow_row_edit:
+                    st.markdown(f"##### 📝 Editing Record ID: `{selected_row_id}`")
+
+                    with st.form(f"form_edit_spi_{selected_row_id}"):
+                        updated_vals = {}
+                        col_e1, col_e2 = st.columns(2)
+                        keys = [k for k in row_data.keys() if k != "id"]
+
+                        for idx, k in enumerate(keys):
+                            val = row_data[k]
+                            target_col = col_e1 if idx % 2 == 0 else col_e2
+                            if isinstance(val, (int, float)) and not pd.isna(val):
+                                updated_vals[k] = target_col.number_input(f"{k}", value=float(val))
+                            else:
+                                updated_vals[k] = target_col.text_input(f"{k}", value=str(val) if not pd.isna(val) else "")
+
+                        save_edit_btn = st.form_submit_button("💾 Save Updated Record Changes", use_container_width=True)
+                        if save_edit_btn:
+                            try:
+                                set_clause = ", ".join([f"{k} = :{k}" for k in updated_vals.keys()])
+                                updated_vals["id"] = selected_row_id
+
+                                with engine.begin() as conn:
+                                    conn.execute(text(f"UPDATE spi_masterlist SET {set_clause} WHERE id = :id"), updated_vals)
+
+                                st.toast("✅ Record updated successfully!", icon="💾")
+                                st.success(f"Record ID {selected_row_id} updated!")
+                                st.session_state["editing_id_sp_profile"] = None
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(f"❌ DATABASE ERROR: {ex}")
+    else:
+        st.info("No records found in SP Profile.")
+
+# ---------------------------------------------------------
+# 10. DATA EXTRACTION & EXPORT MODULE (ERROR-PROOFED)
+# ---------------------------------------------------------
+elif selected_view == "Data Extraction & Export":
+    st.subheader("📥 Data Extraction & Export Center")
+    st.caption("Pili ug Module ug Date Range para maka-extract ug Excel o CSV Report.")
+
+    exportable_modules = {
+        "CEAC_Municipal": {"table": "ceac_municipal", "date_col": "activity_date"},
+        "CEAC_Barangay": {"table": "ceac_barangay", "date_col": "activity_date"},
+        "Geotagged_Photos": {"table": "geotagged_photos", "date_col": "date_uploaded"},
+        "Disbursement": {"table": "disbursement", "date_col": "disbursement_date"},
+        "Sub_Project_Closeout_Tracker": {"table": "sub_project_closeout_tracker", "date_col": "spcr_date_submitted"},
+        "SP_Profile": {"table": "spi_masterlist", "date_col": "created_date"},
+        "Summary": {"table": "summary", "date_col": None},
+    }
+
+    c_ex1, c_ex2 = st.columns([1, 2])
+
+    with c_ex1:
+        st.markdown("##### 📌 Extraction Settings")
+        selected_mod = st.selectbox("Select Module to Extract Data From:", list(exportable_modules.keys()))
+        mod_info = exportable_modules[selected_mod]
+        
+        date_col_name = mod_info["date_col"]
+
+        st.markdown("---")
+        st.markdown("##### 📅 Date Range Filtering")
+        
+        default_start = datetime.date(2026, 1, 1)
+        default_end = datetime.date.today()
+
+        if date_col_name:
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                start_date = st.date_input("Start Date:", value=default_start)
+            with col_d2:
+                end_date = st.date_input("End Date:", value=default_end)
+        else:
+            st.info("ℹ️ Note: This module has no specific date column. Full dataset will be loaded.")
+            start_date, end_date = None, None
+
+    with c_ex2:
+        st.markdown(f"##### 📊 Extracted Preview: `{selected_mod}`")
+        df_mod = load_db_table(mod_info["table"])
+
+        if not df_mod.empty:
+            if date_col_name and date_col_name in df_mod.columns and start_date and end_date:
+                try:
+                    df_mod[date_col_name] = pd.to_datetime(df_mod[date_col_name], errors="coerce").dt.date
+                    df_filtered_export = df_mod[(df_mod[date_col_name] >= start_date) & (df_mod[date_col_name] <= end_date)]
+                except Exception:
+                    df_filtered_export = df_mod.copy()
+            else:
+                df_filtered_export = df_mod.copy()
+
+            st.write(f"Total Records Found: **{len(df_filtered_export)}**")
+            st.dataframe(df_filtered_export, use_container_width=True, height=350)
+
+            st.markdown("---")
+            st.markdown("##### 💾 Download Report Options")
+            btn_col1, btn_col2 = st.columns(2)
+
+            excel_buffer = io.BytesIO()
+            has_excel = False
+            try:
+                with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+                    df_filtered_export.to_excel(writer, index=False, sheet_name=selected_mod[:30])
+                excel_data = excel_buffer.getvalue()
+                has_excel = True
+            except Exception:
+                try:
+                    with pd.ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
+                        df_filtered_export.to_excel(writer, index=False, sheet_name=selected_mod[:30])
+                    excel_data = excel_buffer.getvalue()
+                    has_excel = True
+                except Exception:
+                    has_excel = False
+
+            with btn_col1:
+                if has_excel:
+                    st.download_button(
+                        label="📊 Download Excel (.xlsx)",
+                        data=excel_data,
+                        file_name=f"{selected_mod}_Report_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+                else:
+                    st.warning("⚠️ Excel engine not installed. Use CSV Download below.")
+
+            csv_data = df_filtered_export.to_csv(index=False).encode("utf-8")
+            with btn_col2:
+                st.download_button(
+                    label="📄 Download CSV (.csv)",
+                    data=csv_data,
+                    file_name=f"{selected_mod}_Report_{datetime.date.today().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+        else:
+            st.info("No records found in this database module.")
+
+# ---------------------------------------------------------
+# 11. CEAC MUNICIPAL, BARANGAY, DISBURSEMENT & CLOSEOUT TRACKER MODULES
+# ---------------------------------------------------------
+else:
+    st.subheader(f"📋 Data Management & Encoding: {selected_view}")
+
+    has_edit_perm = can_edit_module(current_role, selected_view)
+
+    if has_edit_perm:
+        if st.button("➕ Add New Activity / Record", use_container_width=True):
+            st.session_state["show_add_form"] = not st.session_state.get("show_add_form", False)
+
+        if st.session_state.get("show_add_form", True):
+            with st.expander(f"📝 Comprehensive Entry Form: {selected_view}", expanded=True):
+
+                if selected_view == "CEAC_Municipal":
+                    col_left, col_right = st.columns(2)
+                    with col_left:
+                        selected_m_act = st.selectbox("Select Municipal Activity", (MUNICIPALITIES if selected_view == "Summary" else MUNICIPAL_ACTIVITIES), key="cm_act")
+                        cm_region = st.selectbox("Region", REGIONS, key="cm_reg")
+                        cm_province = st.selectbox("Province", PROVINCES, key="cm_prov")
+                        cm_municipality = st.selectbox("Municipality", MUNICIPALITIES, key="cm_mun")
+                        cm_cycle = st.selectbox("Cycle / Batch", CYCLE_BATCHES, key="cm_cyc")
+                        cm_date = st.date_input("Activity Date", datetime.date.today(), key="cm_dt").strftime("%Y-%m-%d")
+
+                    with col_right:
+                        cm_date_enc = datetime.date.today().strftime("%Y-%m-%d")
+                        st.text_input("Date Encoded (Auto)", value=cm_date_enc, disabled=True, key="cm_de_dis")
+                        cm_encoder = st.session_state["user_name"]
+                        st.text_input("Encoded By (Auto Logged User)", value=cm_encoder, disabled=True, key="cm_eb_dis")
+                        cm_mov_st = st.selectbox("MOV Status", MOV_STATUSES, key="cm_mov_st")
+                        cm_enc_st = st.selectbox("Encoded Status", ENCODED_OPTIONS, key="cm_enc_st")
+                        cm_remarks = st.text_area("Remarks", key="cm_rem")
+
+                    st.markdown("---")
+
+                    if selected_m_act == "GRS Instake":
+                        st.markdown("##### 📁 Upload GRS Intake Files (Multiple Upload - Up to 10 Files)")
+                        grs_files = st.file_uploader("Choose GRS Files (Max 10)", type=["pdf", "png", "jpg", "jpeg", "docx"], accept_multiple_files=True, key="cm_grs_files")
+                        if grs_files and len(grs_files) > 10:
+                            st.error("⚠️ Exceeded maximum 10 files! Processing only the first 10 files.")
+                            grs_files = grs_files[:10]
+
+                        att_saved, min_saved, lgu_saved, other_saved = "N/A - GRS Intake", "N/A - GRS Intake", "N/A - GRS Intake", "N/A - GRS Intake"
+                        grs_saved = save_multiple_files(grs_files)
+                    else:
+                        st.markdown("##### 📁 Upload MOVs (Separate Buttons for Municipal Activities)")
+                        mov_col1, mov_col2, mov_col3, mov_col4 = st.columns(4)
+                        with mov_col1:
+                            st.markdown("**1. Upload Attendance**")
+                            att_file = st.file_uploader("Choose Attendance File/Image", type=["pdf", "png", "jpg", "jpeg", "docx"], key="cm_att")
+                            att_saved = save_uploaded_file(att_file)
+
+                        with mov_col2:
+                            st.markdown("**2. Upload Minutes of Activity**")
+                            min_file = st.file_uploader("Choose Minutes File/Image", type=["pdf", "png", "jpg", "jpeg", "docx"], key="cm_min")
+                            min_saved = save_uploaded_file(min_file)
+
+                        with mov_col3:
+                            st.markdown("**3. Upload LGU Minutes of Activity**")
+                            lgu_min_file = st.file_uploader("Choose LGU Minutes File/Image", type=["pdf", "png", "jpg", "jpeg", "docx"], key="cm_lgu_min")
+                            lgu_saved = save_uploaded_file(lgu_min_file)
+
+                        with mov_col4:
+                            st.markdown("**4. Upload Other/s**")
+                            other_file = st.file_uploader("Choose Other File/Image", type=["pdf", "png", "jpg", "jpeg", "docx"], key="cm_other_file")
+                            other_saved = save_uploaded_file(other_file)
+
+                        grs_saved = ""
+
+                    st.markdown("---")
+                    b1, b2, b3 = st.columns([2, 2, 1])
+                    if b1.button("💾 Save Record to Database", use_container_width=True, key="cm_save_btn"):
+                        try:
+                            with engine.begin() as conn:
+                                conn.execute(
+                                    text("""
+                                        INSERT INTO ceac_municipal (activity_name, region, province, municipality, cycle_batch, activity_date, date_encoded, encoded_by, mov_status, encoded_status, mov_attendance, mov_minutes, mov_lgu_minutes, mov_grs_files, mov_other_files, remarks)
+                                        VALUES (:act, :reg, :prov, :mun, :cyc, :dt, :denc, :enc, :mst, :est, :att, :min, :lgu, :grs, :oth, :rem)
+                                    """),
+                                    {
+                                        "act": selected_m_act, "reg": cm_region, "prov": cm_province, "mun": cm_municipality,
+                                        "cyc": cm_cycle, "dt": cm_date, "denc": cm_date_enc, "enc": cm_encoder,
+                                        "mst": cm_mov_st, "est": cm_enc_st, "att": att_saved, "min": min_saved,
+                                        "lgu": lgu_saved, "grs": grs_saved, "oth": other_saved, "rem": cm_remarks,
+                                    },
+                                )
+                            st.toast("✅ Municipal Activity record saved to Supabase!", icon="🎉")
+                            st.success("Municipal Activity record saved to database successfully!")
+                            st.session_state["show_add_form"] = False
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(f"❌ DATABASE ERROR: {ex}")
+
+                elif selected_view == "CEAC_Barangay":
+                    col_left, col_right = st.columns(2)
+                    with col_left:
+                        selected_b_act = st.selectbox("Select Barangay Activity", BARANGAY_ACTIVITIES, key="cb_act")
+                        cb_region = st.selectbox("Region", REGIONS, key="cb_reg")
+                        cb_province = st.selectbox("Province", PROVINCES, key="cb_prov")
+                        cb_municipality = st.selectbox("Municipality", MUNICIPALITIES, key="cb_mun")
+                        cb_barangay = st.text_input("Barangay Name*", key="cb_brgy")
+                        cb_cycle = st.selectbox("Cycle / Batch", CYCLE_BATCHES, key="cb_cyc")
+                        cb_date = st.date_input("Activity Date", datetime.date.today(), key="cb_dt").strftime("%Y-%m-%d")
+
+                    with col_right:
+                        cb_date_enc = datetime.date.today().strftime("%Y-%m-%d")
+                        st.text_input("Date Encoded (Auto)", value=cb_date_enc, disabled=True, key="cb_de_dis")
+                        cb_encoder = st.session_state["user_name"]
+                        st.text_input("Encoded By (Auto Logged User)", value=cb_encoder, disabled=True, key="cb_eb_dis")
+                        cb_mov_st = st.selectbox("MOV Status", MOV_STATUSES, key="cb_mov_st")
+                        cb_enc_st = st.selectbox("Encoded Status", ENCODED_OPTIONS, key="cb_enc_st")
+                        cb_remarks = st.text_area("Remarks", key="cb_rem")
+
+                    st.markdown("---")
+
+                    if selected_b_act == "CV":
+                        st.markdown("##### 📁 Upload CV Files (Multiple Upload - Up to 30 CVs)")
+                        cv_files = st.file_uploader("Choose CV Files (Max 30)", type=["pdf", "png", "jpg", "jpeg", "docx"], accept_multiple_files=True, key="cb_cv_files")
+                        if cv_files and len(cv_files) > 30:
+                            st.error("⚠️ Exceeded maximum 30 files! Processing only the first 30 files.")
+                            cv_files = cv_files[:30]
+
+                        att_saved, brgy_min_saved, min_saved, other_saved = "N/A - CV", "N/A - CV", "N/A - CV", "N/A - CV"
+                        cv_saved = save_multiple_files(cv_files)
+                    else:
+                        st.markdown("##### 📁 Upload MOVs (Separate Buttons for Barangay Activities)")
+                        mov_col1, mov_col2, mov_col3, mov_col4 = st.columns(4)
+                        with mov_col1:
+                            st.markdown("**1. Upload Attendance**")
+                            att_file = st.file_uploader("Choose Attendance File/Image", type=["pdf", "png", "jpg", "jpeg", "docx"], key="cb_att")
+                            att_saved = save_uploaded_file(att_file)
+
+                        with mov_col2:
+                            st.markdown("**2. Upload Brgy Minutes of Activity**")
+                            brgy_min_file = st.file_uploader("Choose Brgy Minutes File/Image", type=["pdf", "png", "jpg", "jpeg", "docx"], key="cb_brgy_min")
+                            brgy_min_saved = save_uploaded_file(brgy_min_file)
+
+                        with mov_col3:
+                            st.markdown("**3. Upload Minutes of Activity**")
+                            min_file = st.file_uploader("Choose Minutes File/Image", type=["pdf", "png", "jpg", "jpeg", "docx"], key="cb_min")
+                            min_saved = save_uploaded_file(min_file)
+
+                        with mov_col4:
+                            st.markdown("**4. Upload Other/s**")
+                            other_file = st.file_uploader("Choose Other File/Image", type=["pdf", "png", "jpg", "jpeg", "docx"], key="cb_other_file")
+                            other_saved = save_uploaded_file(other_file)
+
+                        cv_saved = ""
+
+                    st.markdown("---")
+                    b1, b2, b3 = st.columns([2, 2, 1])
+                    if b1.button("💾 Save Record to Database", use_container_width=True, key="cb_save_btn"):
+                        if not cb_barangay.strip():
+                            st.error("⚠️ **REQUIRED FIELD MISSING:** Palihug sulati ang Barangay Name!")
+                        else:
+                            try:
+                                with engine.begin() as conn:
+                                    conn.execute(
+                                        text("""
+                                            INSERT INTO ceac_barangay (activity_name, region, province, municipality, barangay, cycle_batch, activity_date, date_encoded, encoded_by, mov_status, encoded_status, mov_attendance, mov_brgy_minutes, mov_lgu_minutes, mov_cv_files, mov_other_files, remarks)
+                                            VALUES (:act, :reg, :prov, :mun, :brgy, :cyc, :dt, :denc, :enc, :mst, :est, :att, :bmin, :min, :cv, :oth, :rem)
+                                        """),
+                                        {
+                                            "act": selected_b_act, "reg": cb_region, "prov": cb_province, "mun": cb_municipality,
+                                            "brgy": cb_barangay.strip(), "cyc": cb_cycle, "dt": cb_date, "denc": cb_date_enc,
+                                            "enc": cb_encoder, "mst": cb_mov_st, "est": cb_enc_st, "att": att_saved,
+                                            "bmin": brgy_min_saved, "min": min_saved, "cv": cv_saved, "oth": other_saved, "rem": cb_remarks,
+                                        },
+                                    )
+                                st.toast("✅ Barangay Activity record saved to Supabase!", icon="🎉")
+                                st.success("Barangay Activity record saved to database successfully!")
+                                st.session_state["show_add_form"] = False
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(f"❌ DATABASE ERROR: {ex}")
+
+                else:
+                    with st.form(f"form_add_{selected_view}"):
+                        form_data = {}
+                        col_left, col_right = st.columns(2)
+
+                        if selected_view == "Sub_Project_Closeout_Tracker":
+                            with col_left:
+                                form_data["sp_id"] = st.text_input("Sub-Project ID / Code (Put 'N/A' if no SP ID)*", key="sp_id_in")
+                                form_data["sp_name"] = st.text_input("Sub-Project Name*", key="sp_name_in")
+                                form_data["municipality"] = st.selectbox("Municipality", MUNICIPALITIES, key="sp_mun")
+                                form_data["barangay"] = st.text_input("Barangay Name", key="sp_brgy")
+                                form_data["cycle_batch"] = st.selectbox("Cycle / Batch", CYCLE_BATCHES, key="sp_cyc")
+                                form_data["functionality_audit_status"] = st.selectbox("Functionality Audit Status", CLOSEOUT_STATUSES, key="sp_fas")
+                                form_data["functionality_audit_date"] = st.date_input("Functionality Audit Date", datetime.date.today(), key="sp_fad").strftime("%Y-%m-%d")
+                                form_data["spcr_status"] = st.selectbox("SPCR Status", CLOSEOUT_STATUSES, key="sp_spcrs")
+                                form_data["spcr_date_submitted"] = st.date_input("SPCR Date Submitted", datetime.date.today(), key="sp_spcrd").strftime("%Y-%m-%d")
+
+                            with col_right:
+                                form_data["closing_accounts_status"] = st.selectbox("Closing Accounts Status", CLOSEOUT_STATUSES, key="sp_cas")
+                                form_data["date_account_closed"] = st.date_input("Date Account Closed", datetime.date.today(), key="sp_dac").strftime("%Y-%m-%d")
+                                form_data["booking_assets_status"] = st.selectbox("Booking Assets Status", CLOSEOUT_STATUSES, key="sp_bas")
+                                form_data["date_booking_assets"] = st.date_input("Date Booking Assets", datetime.date.today(), key="sp_dba").strftime("%Y-%m-%d")
+                                form_data["overall_closeout_status"] = st.selectbox("Overall Closeout Status", ["Ongoing Implementation", "For Closeout", "Fully Closed & Turned Over", "On Hold"], key="sp_ocs")
+                                form_data["encoded_status"] = st.selectbox("Encoded Status", ENCODED_OPTIONS, key="sp_enc")
+                                form_data["target_hhs"] = st.number_input("Target HHs", min_value=0, step=1, key="sp_thh")
+                                form_data["actual_hhs"] = st.number_input("Actual HHs", min_value=0, step=1, key="sp_ahh")
+                                form_data["male_beneficiaries"] = st.number_input("Male Beneficiaries", min_value=0, step=1, key="sp_mb")
+                                form_data["female_beneficiaries"] = st.number_input("Female Beneficiaries", min_value=0, step=1, key="sp_fb")
+                                form_data["remarks"] = st.text_area("Remarks", key="sp_rem")
+                                form_data["mov_file"] = ""
+
+                            form_data["total_beneficiaries"] = form_data["male_beneficiaries"] + form_data["female_beneficiaries"]
+                            form_data["hh_variance"] = form_data["actual_hhs"] - form_data["target_hhs"]
+
+                        elif selected_view == "Disbursement":
+                            with col_left:
+                                form_data["sp_id"] = st.text_input("Sub-Project ID / Code (Put 'N/A' if no SP ID)*", key="d_spid")
+                                form_data["sp_name"] = st.text_input("Sub-Project Name", key="d_spname")
+                                form_data["municipality"] = st.selectbox("Municipality*", MUNICIPALITIES, key="d_mun")
+                                form_data["dv_number"] = st.text_input("Disbursement Voucher (DV) No.*", key="d_dv")
+                                form_data["check_number"] = st.text_input("Check / LDDAP No.", key="d_chk")
+                                form_data["payee"] = st.text_input("Payee / Recipient", key="d_payee")
+                                form_data["disbursement_date"] = st.date_input("Disbursement Date", datetime.date.today(), key="d_dt").strftime("%Y-%m-%d")
+                            with col_right:
+                                form_data["amount"] = st.number_input("Gross Amount (₱)", min_value=0.0, step=100.0, key="d_amt")
+                                form_data["tax_amount"] = st.number_input("Tax Amount (₱)", min_value=0.0, step=100.0, key="d_tax")
+                                form_data["net_amount"] = form_data["amount"] - form_data["tax_amount"]
+                                form_data["status"] = st.selectbox("Disbursement Status", ["Released", "Pending Liquidation", "Liquidated", "Cancelled"], key="d_stat")
+                                form_data["encoded_status"] = st.selectbox("Encoded Status", ENCODED_OPTIONS, key="d_enc")
+                                form_data["mov_file"] = ""
+                                form_data["attachment"] = ""
+
+                        else:
+                            with col_left:
+                                form_data["municipality"] = st.selectbox("Municipality", MUNICIPALITIES, key="sum_mun")
+                                form_data["total_sps"] = st.number_input("Total Sub-Projects", min_value=0, step=1, key="sum_sps")
+                                form_data["total_grant"] = st.number_input("Total Grant Allocation (₱)", min_value=0.0, step=1000.0, key="sum_grant")
+                            with col_right:
+                                form_data["total_disbursed"] = st.number_input("Total Disbursed Amount (₱)", min_value=0.0, step=1000.0, key="sum_disb")
+                                form_data["total_liquidated"] = st.number_input("Total Liquidated Amount (₱)", min_value=0.0, step=1000.0, key="sum_liq")
+                                form_data["unliquidated_balance"] = form_data["total_disbursed"] - form_data["total_liquidated"]
+
+                        st.markdown("---")
+                        b1, b2, b3 = st.columns([2, 2, 1])
+                        save_btn = b1.form_submit_button("💾 Save Record to Database", use_container_width=True)
+                        cancel_btn = b3.form_submit_button("❌ Cancel", use_container_width=True)
+
+                        if save_btn:
+                            valid = True
+                            if selected_view == "Sub_Project_Closeout_Tracker" and (not form_data.get("sp_id") or not form_data.get("sp_name")):
+                                st.error("⚠️ **REQUIRED FIELDS MISSING:** Palihug sulati ang Sub-Project ID (o 'N/A') ug Sub-Project Name!")
+                                valid = False
+                            elif selected_view == "Disbursement" and (not form_data.get("sp_id") or not form_data.get("dv_number")):
+                                st.error("⚠️ **REQUIRED FIELDS MISSING:** Palihug sulati ang Sub-Project ID (o 'N/A') ug DV Number!")
+                                valid = False
+
+                            if valid:
+                                table_low = selected_view.lower()
+                                col_names_str = ", ".join(form_data.keys())
+                                placeholders = ", ".join([f":{k}" for k in form_data.keys()])
+
+                                try:
+                                    with engine.begin() as conn:
+                                        conn.execute(
+                                            text(f"INSERT INTO {table_low} ({col_names_str}) VALUES ({placeholders})"),
+                                            form_data,
+                                        )
+
+                                        if selected_view == "Disbursement":
+                                            d_mun = form_data.get("municipality")
+                                            d_amt = form_data.get("amount", 0.0)
+
+                                            if d_mun:
+                                                sum_res = conn.execute(
+                                                    text("SELECT total_disbursed, total_liquidated FROM summary WHERE lower(municipality) = lower(:m)"),
+                                                    {"m": d_mun},
+                                                ).fetchone()
+
+                                                if sum_res:
+                                                    curr_disb = float(sum_res[0] or 0.0) + float(d_amt)
+                                                    curr_liq = float(sum_res[1] or 0.0)
+                                                    new_unliq = curr_disb - curr_liq
+
+                                                    conn.execute(
+                                                        text("""
+                                                            UPDATE summary 
+                                                            SET total_disbursed = :td, unliquidated_balance = :ub 
+                                                            WHERE lower(municipality) = lower(:m)
+                                                        """),
+                                                        {"td": curr_disb, "ub": new_unliq, "m": d_mun},
+                                                    )
+                                                else:
+                                                    conn.execute(
+                                                        text("""
+                                                            INSERT INTO summary (municipality, total_sps, total_grant, total_disbursed, total_liquidated, unliquidated_balance)
+                                                            VALUES (:m, 1, :td, :td, 0.0, :td)
+                                                        """),
+                                                        {"m": d_mun, "td": float(d_amt)},
+                                                    )
+
+                                    st.toast(f"✅ Record saved to {selected_view} & Auto-Reflected to Summary!", icon="💾")
+                                    st.success("Record saved and Summary Module updated successfully!")
+                                    st.session_state["show_add_form"] = False
+                                    st.rerun()
+                                except Exception as ex:
+                                    st.error(f"❌ DATABASE ERROR: {ex}")
+    else:
+        st.info(f"👁️ **VIEW-ONLY MODE:** Your assigned role (`{current_role}`) is restricted from adding or editing records in '{selected_view}'.")
+
+    st.markdown("---")
+    st.subheader(f"📊 Added Activities Masterlist ({selected_view})")
+
+    df_current = load_db_table(selected_view.lower())
+    search_q = st.text_input("🔍 Quick Keyword Search Across Records:", "")
+    df_filtered = df_current.copy()
+    if search_q and not df_filtered.empty:
+        mask = df_filtered.astype(str).apply(lambda row: row.str.contains(search_q, case=False).any(), axis=1)
+        df_filtered = df_filtered[mask]
+
+    if not df_filtered.empty:
+        can_sync_table = (current_role == "Superuser") or has_edit_perm
+
+        edited_df = st.data_editor(
+            df_filtered,
+            use_container_width=True,
+            num_rows="dynamic" if can_sync_table else "fixed",
+            disabled=not can_sync_table,
+            key=f"editor_{selected_view}",
+        )
+        if can_sync_table and st.button("💾 Sync Table Changes to Database", key=f"sync_btn_{selected_view}"):
+            table_low = selected_view.lower()
+            try:
+                with engine.begin() as conn:
+                    edited_df.to_sql(table_low, conn, if_exists="replace", index=False)
+                st.toast("✅ Table changes synchronized to Supabase!", icon="🎉")
+                st.success("Database synchronized successfully!")
+                st.rerun()
+            except Exception as ex:
+                st.error(f"❌ DATABASE ERROR: {ex}")
+
+        # MOV Inspector (Superuser, MDM, or record encoder)
+        render_mov_inspector(df_filtered, selected_view)
+
+        if "id" in df_filtered.columns:
+            st.markdown("---")
+            with st.expander(f"⚙️ Record Action Panel (Edit / Request Delete / Superuser Archive in {selected_view})"):
+                row_ids = df_filtered["id"].tolist()
+                selected_row_id = st.selectbox("Select Row ID:", row_ids, key=f"sel_id_{selected_view}")
+                row_data = df_filtered[df_filtered["id"] == selected_row_id].iloc[0].to_dict()
+                allow_row_edit = can_edit_record_row(current_role, selected_view, row_data)
+
+                col_btn1, col_btn2 = st.columns(2)
+
+                with col_btn1:
+                    if allow_row_edit and st.button("✏️ Edit Selected Record", use_container_width=True, key=f"btn_edit_{selected_view}"):
+                        st.session_state[f"editing_id_{selected_view}"] = selected_row_id
+                    elif not allow_row_edit:
+                        st.caption("Edit restricted to record owner or Superuser.")
+
+                with col_btn2:
+                    table_low = selected_view.lower()
+                    if current_role == "Superuser":
+                        if st.button("🗄️ Archive & Delete Record (30-Day Retention)", use_container_width=True, key=f"btn_del_{selected_view}"):
+                            try:
+                                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                                purge_dt = now_utc + datetime.timedelta(days=ARCHIVE_RETENTION_DAYS)
+                                sum_parts = [f"{table_low} | ID={selected_row_id}"]
+                                for k in ["activity_name", "sp_name", "dv_number", "municipality", "barangay", "cycle_batch"]:
+                                    if k in row_data and row_data[k] is not None and str(row_data[k]).strip() != "":
+                                        sum_parts.append(f"{k}={row_data[k]}")
+                                with engine.begin() as conn:
+                                    conn.execute(
+                                        text("""
+                                            INSERT INTO archived_records (source_table, original_record_id, record_summary, record_payload, requested_by, approved_by, archived_at, auto_purge_at)
+                                            VALUES (:st, :orid, :sum, :pay, :reqby, :appby, :arch, :prg)
+                                        """),
+                                        {
+                                            "st": table_low,
+                                            "orid": int(selected_row_id),
+                                            "sum": " | ".join(sum_parts),
+                                            "pay": serialize_record_payload(row_data),
+                                            "reqby": current_user_name,
+                                            "appby": current_user_name,
+                                            "arch": now_utc,
+                                            "prg": purge_dt,
+                                        },
+                                    )
+                                    conn.execute(text(f"DELETE FROM {table_low} WHERE id = :id"), {"id": selected_row_id})
+                                st.toast("✅ Archived for 30 days!", icon="🗄️")
+                                st.success(f"Record ID {selected_row_id} moved to 30-day archive!")
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(f"❌ DATABASE ERROR: {ex}")
+                    elif current_role != "CEF":
+                        req_reason = st.text_input("Reason for Delete Request:", key=f"del_reason_{selected_view}_{selected_row_id}")
+                        if st.button("📤 Request Delete (Needs Superuser Approval)", use_container_width=True, key=f"btn_req_del_{selected_view}"):
+                            try:
+                                submit_deletion_request(table_low, row_data, req_reason)
+                                st.toast("📤 Delete request sent to Superuser!", icon="📨")
+                                st.success("Deletion request submitted for Superuser approval.")
+                            except Exception as ex:
+                                st.error(f"❌ DATABASE ERROR: {ex}")
+
+                if st.session_state.get(f"editing_id_{selected_view}") == selected_row_id and allow_row_edit:
+                    st.markdown(f"##### 📝 Editing Record ID: `{selected_row_id}`")
+
+                    with st.form(f"form_edit_row_{selected_view}_{selected_row_id}"):
+                        updated_vals = {}
+                        col_e1, col_e2 = st.columns(2)
+                        keys = [k for k in row_data.keys() if k != "id"]
+
+                        for idx, k in enumerate(keys):
+                            val = row_data[k]
+                            target_col = col_e1 if idx % 2 == 0 else col_e2
+                            if isinstance(val, (int, float)) and not pd.isna(val):
+                                updated_vals[k] = target_col.number_input(f"{k}", value=float(val))
+                            else:
+                                updated_vals[k] = target_col.text_input(f"{k}", value=str(val) if not pd.isna(val) else "")
+
+                        save_edit_btn = st.form_submit_button("💾 Save Updated Record Changes", use_container_width=True)
+                        if save_edit_btn:
+                            try:
+                                set_clause = ", ".join([f"{k} = :{k}" for k in updated_vals.keys()])
+                                updated_vals["id"] = selected_row_id
+                                table_low = selected_view.lower()
+
+                                with engine.begin() as conn:
+                                    conn.execute(text(f"UPDATE {table_low} SET {set_clause} WHERE id = :id"), updated_vals)
+
+                                st.toast("✅ Record updated successfully!", icon="💾")
+                                st.success(f"Record ID {selected_row_id} updated!")
+                                st.session_state[f"editing_id_{selected_view}"] = None
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(f"❌ DATABASE ERROR: {ex}")
+
+    else:
+        st.info(f"No records found in '{selected_view}'.")
+
+st.markdown("---")
 st.markdown(
     """
     <div style="text-align: center; font-size: 0.85em; color: #6c757d; padding-bottom: 20px;">
-        ⚙️ <b>PDBBM SCMS Beneficiary Management System</b> | Powered by Streamlit & Python<br>
+        ⚙️ <b>PAMANA Peace & Development Program Management System</b> | Powered by Streamlit & Python<br>
         Designed & Developed by <b>LOUIE B. IDULSA - PDBBM ITO I</b> • DSWD Field Office X
     </div>
     """,
