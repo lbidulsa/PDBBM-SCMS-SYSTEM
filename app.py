@@ -1,4 +1,3 @@
-import base64
 import datetime
 from datetime import date
 import io
@@ -373,24 +372,11 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-os.makedirs("uploaded_scms_docs", exist_ok=True)
-
 # Auto-sync, ensure database tables exist & PURGE ARCHIVE > 30 DAYS
 try:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS last_login TIMESTAMP WITH TIME ZONE;"))
         conn.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS temp_pass_created_at TIMESTAMP WITH TIME ZONE;"))
-        conn.execute(text("ALTER TABLE cases ADD COLUMN IF NOT EXISTS supporting_docs TEXT;"))
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS scms_file_vault (
-                id SERIAL PRIMARY KEY,
-                filename VARCHAR(512) UNIQUE NOT NULL,
-                mime_type VARCHAR(150),
-                file_base64 TEXT NOT NULL,
-                uploaded_by VARCHAR(255),
-                uploaded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
-        """))
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS deleted_cases_archive (
                 archive_id SERIAL PRIMARY KEY,
@@ -411,157 +397,6 @@ try:
         conn.execute(text("UPDATE deletion_requests SET status = 'APPROVED' WHERE status = 'PENDING' AND case_id NOT IN (SELECT id FROM cases)"))
 except Exception:
     pass
-
-def persist_scms_file_to_vault(filename, file_bytes, mime_type="", uploaded_by=""):
-    """Stores a Base64 copy of an SCMS document/file in Supabase so it survives restarts/sleep."""
-    if not filename or not file_bytes:
-        return
-    try:
-        b64_data = base64.b64encode(file_bytes).decode("utf-8")
-        with engine.begin() as conn:
-            conn.execute(
-                text("""
-                    INSERT INTO scms_file_vault (filename, mime_type, file_base64, uploaded_by, uploaded_at)
-                    VALUES (:fn, :mt, :b64, :ub, CURRENT_TIMESTAMP)
-                    ON CONFLICT (filename) DO UPDATE
-                    SET mime_type = EXCLUDED.mime_type,
-                        file_base64 = EXCLUDED.file_base64,
-                        uploaded_by = COALESCE(NULLIF(EXCLUDED.uploaded_by, ''), scms_file_vault.uploaded_by),
-                        uploaded_at = CURRENT_TIMESTAMP
-                """),
-                {"fn": filename, "mt": mime_type or "", "b64": b64_data, "ub": uploaded_by or ""},
-            )
-    except Exception:
-        pass
-
-def get_scms_file_bytes_from_vault(filename):
-    """Retrieves raw file bytes from scms_file_vault and restores to local disk."""
-    if not filename:
-        return None
-    try:
-        with engine.connect() as conn:
-            row = conn.execute(
-                text("SELECT file_base64 FROM scms_file_vault WHERE filename = :fn ORDER BY id DESC LIMIT 1"),
-                {"fn": filename},
-            ).fetchone()
-        if row and row[0]:
-            raw_bytes = base64.b64decode(row[0])
-            try:
-                disk_path = os.path.join("uploaded_scms_docs", filename)
-                with open(disk_path, "wb") as f:
-                    f.write(raw_bytes)
-            except Exception:
-                pass
-            return raw_bytes
-    except Exception:
-        pass
-    return None
-
-def save_scms_uploaded_files(files_list, uploaded_by=""):
-    """Saves uploaded files to disk and persistent Supabase vault; returns comma-separated filenames."""
-    saved_names = []
-    if files_list:
-        for file_obj in files_list:
-            raw_bytes = file_obj.getvalue()
-            disk_path = os.path.join("uploaded_scms_docs", file_obj.name)
-            with open(disk_path, "wb") as f:
-                f.write(raw_bytes)
-            persist_scms_file_to_vault(file_obj.name, raw_bytes, getattr(file_obj, "type", ""), uploaded_by=uploaded_by)
-            saved_names.append(file_obj.name)
-    return ", ".join(saved_names)
-
-def parse_scms_filenames(raw_val):
-    if raw_val is None or pd.isna(raw_val):
-        return []
-    txt = str(raw_val).strip()
-    if not txt or txt.upper().startswith("N/A"):
-        return []
-    return [part.strip() for part in txt.split(",") if part.strip()]
-
-def render_scms_file_viewer(filename, key_prefix="", case_id=None, curr_docs_raw=""):
-    """Renders preview/download for a stored SCMS file or allows re-attaching missing files to vault."""
-    disk_path = os.path.join("uploaded_scms_docs", filename)
-    st.markdown(f"**📄 File:** `{filename}`")
-
-    file_bytes = None
-    from_vault = False
-
-    if os.path.exists(disk_path) and os.path.isfile(disk_path):
-        with open(disk_path, "rb") as f:
-            file_bytes = f.read()
-    else:
-        file_bytes = get_scms_file_bytes_from_vault(filename)
-        if file_bytes is not None:
-            from_vault = True
-
-    if file_bytes is not None:
-        if from_vault:
-            st.info("☁️ Loaded from persistent database vault (`scms_file_vault`) after restart/sleep.")
-
-        ext = os.path.splitext(filename)[1].lower()
-        c_dl, c_sz = st.columns([1, 2])
-        with c_dl:
-            st.download_button(
-                label=f"⬇️ Download {filename}",
-                data=file_bytes,
-                file_name=filename,
-                key=f"scms_dl_{key_prefix}_{filename}",
-                use_container_width=True,
-            )
-        with c_sz:
-            st.caption(f"Size: {len(file_bytes)/1024:.1f} KB")
-
-        if ext in [".png", ".jpg", ".jpeg"]:
-            st.image(file_bytes, caption=filename, use_container_width=True)
-        elif ext == ".pdf":
-            b64_pdf = base64.b64encode(file_bytes).decode("utf-8")
-            pdf_html = (
-                f'<iframe src="data:application/pdf;base64,{b64_pdf}" '
-                f'width="100%" height="480" style="border: 1px solid #CBD5E1; border-radius: 8px;"></iframe>'
-            )
-            st.markdown(pdf_html, unsafe_allow_html=True)
-        else:
-            st.info(f"ℹ️ Inline preview not available for `{ext}`; use the Download button above.")
-    else:
-        st.warning(
-            f"⚠️ **Not corrupted — record is intact**, but binary file `{filename}` is not on local disk or database vault "
-            f"(happens for files attached before the vault update prior to a restart/sleep)."
-        )
-        if case_id:
-            with st.expander(f"📤 Re-Attach File for `{filename}` (Saves to Disk & Database Vault)"):
-                re_file = st.file_uploader(
-                    f"Select file to restore `{filename}`:",
-                    type=["pdf", "png", "jpg", "jpeg", "docx", "xlsx", "csv"],
-                    key=f"scms_re_up_{key_prefix}_{filename}",
-                )
-                if re_file is not None and st.button(f"💾 Save File to Vault & Update Case", key=f"scms_re_btn_{key_prefix}_{filename}", use_container_width=True):
-                    try:
-                        r_bytes = re_file.getvalue()
-                        with open(os.path.join("uploaded_scms_docs", re_file.name), "wb") as f:
-                            f.write(r_bytes)
-                        persist_scms_file_to_vault(
-                            re_file.name,
-                            r_bytes,
-                            getattr(re_file, "type", ""),
-                            uploaded_by=st.session_state.get("user_info", {}).get("email", ""),
-                        )
-                        parts = [p.strip() for p in str(curr_docs_raw or "").split(",") if p.strip()]
-                        if filename in parts and re_file.name != filename:
-                            parts = [re_file.name if p == filename else p for p in parts]
-                        elif re_file.name not in parts:
-                            parts.append(re_file.name)
-                        new_docs_val = ", ".join(parts)
-
-                        with engine.begin() as conn:
-                            conn.execute(
-                                text("UPDATE cases SET supporting_docs = :sd WHERE id = :cid"),
-                                {"sd": new_docs_val, "cid": int(case_id)},
-                            )
-                        st.toast(f"✅ `{re_file.name}` saved to SCMS vault!", icon="☁️")
-                        st.success(f"File `{re_file.name}` saved to database vault and linked to Case #{case_id}!")
-                        st.rerun()
-                    except Exception as ex:
-                        st.error(f"❌ Restore error: {ex}")
 
 def generate_random_password(length=10):
     chars = string.ascii_letters + string.digits + "@#$%"
@@ -1063,25 +898,6 @@ elif menu_selection == "👤 1. Personal & Profiling":
         except Exception:
             pass
 
-    st.markdown("##### 📎 Persistent Supporting Documents / Attachments (Saved to Database Vault)")
-    attached_files_upload = st.file_uploader(
-        "Attach Supporting Documents / IDs / Scans (PDF, JPG, PNG, DOCX, XLSX):",
-        type=["pdf", "png", "jpg", "jpeg", "docx", "xlsx", "csv"],
-        accept_multiple_files=True,
-        key="m1_supporting_docs_uploader",
-    )
-    existing_docs_str = str(c_data.get("supporting_docs", "") or "")
-    existing_docs_list = parse_scms_filenames(existing_docs_str)
-    if existing_docs_list:
-        with st.expander(f"📂 View / Download Attached Documents ({len(existing_docs_list)} file(s))", expanded=False):
-            for idx_d, doc_name in enumerate(existing_docs_list):
-                render_scms_file_viewer(
-                    doc_name,
-                    key_prefix=f"m1_{c_data.get('id', 'new')}_{idx_d}",
-                    case_id=c_data.get("id"),
-                    curr_docs_raw=existing_docs_str,
-                )
-
     with st.form("personal_info_form"):
         col_hdr1, col_hdr2, col_hdr3 = st.columns([2, 2, 2])
         with col_hdr1:
@@ -1230,13 +1046,6 @@ elif menu_selection == "👤 1. Personal & Profiling":
             
             dialects_spoken = "; ".join(formatted_dialects_list) if formatted_dialects_list else "None"
 
-            newly_saved_docs = save_scms_uploaded_files(attached_files_upload, uploaded_by=user_email)
-            combined_docs_list = list(existing_docs_list)
-            for fn_new in parse_scms_filenames(newly_saved_docs):
-                if fn_new not in combined_docs_list:
-                    combined_docs_list.append(fn_new)
-            final_supporting_docs_str = ", ".join(combined_docs_list)
-
             if not last_name or not first_name or not control_no_val.strip():
                 st.error("⚠️ **REQUIRED FIELDS MISSING:** Palihug sulati ang Household ID No., First Name, ug Last Name!")
             else:
@@ -1256,8 +1065,7 @@ elif menu_selection == "👤 1. Personal & Profiling":
                     "motivations_joining": motivations_joining, "reasons_leaving": reasons_leaving, "intentions_motivations": intentions_motivations,
                     "dialects_spoken": dialects_spoken, "birth_cert_status": birth_cert_status, "birth_cert_registry": birth_cert_registry,
                     "marriage_cert_status": marriage_cert_status, "philhealth_status": philhealth_status, "philhealth_id": philhealth_id,
-                    "philhealth_category": philhealth_category, "supporting_docs": final_supporting_docs_str,
-                    "profile_status": curr_prof_st, "staff_email": user_email, "encoded_by": user_email
+                    "philhealth_category": philhealth_category, "profile_status": curr_prof_st, "staff_email": user_email, "encoded_by": user_email
                 }
                 
                 try:
@@ -1273,7 +1081,7 @@ elif menu_selection == "👤 1. Personal & Profiling":
                         with engine.begin() as conn:
                             conn.execute(text(f"UPDATE cases SET {set_clause} WHERE id=:edit_id"), params_save)
                     
-                    st.toast("✅ Beneficiary record & vault attachments saved to Supabase!", icon="🎉")
+                    st.toast("✅ Beneficiary record saved to Supabase!", icon="🎉")
                     st.success("✅ Beneficiary record updated successfully!")
                     st.session_state["autofill_data"] = {}
                 except Exception as ex:
@@ -1413,24 +1221,6 @@ elif menu_selection in [
                 pass
 
     else:
-        mod_docs_upload = st.file_uploader(
-            f"📎 Attach Supporting Documents for {menu_selection} (Saved to Database Vault):",
-            type=["pdf", "png", "jpg", "jpeg", "docx", "xlsx", "csv"],
-            accept_multiple_files=True,
-            key=f"mod_docs_up_{menu_selection}",
-        )
-        curr_docs_str_mod = str(c_data.get("supporting_docs", "") or "")
-        curr_docs_list_mod = parse_scms_filenames(curr_docs_str_mod)
-        if case_id and curr_docs_list_mod:
-            with st.expander(f"📂 Vault Attachments for this Beneficiary ({len(curr_docs_list_mod)} file(s))", expanded=False):
-                for idx_m, d_fn in enumerate(curr_docs_list_mod):
-                    render_scms_file_viewer(
-                        d_fn,
-                        key_prefix=f"mod_{menu_selection}_{case_id}_{idx_m}",
-                        case_id=case_id,
-                        curr_docs_raw=curr_docs_str_mod,
-                    )
-
         with st.form("module_general_form"):
             if menu_selection == "📋 3. Prob & Assistance":
                 st.markdown("##### 📋 PART IV: Presenting Problem (Pangunahing Suliranin)")
@@ -1610,21 +1400,14 @@ elif menu_selection in [
             if sub_m:
                 if case_id:
                     try:
-                        newly_mod_docs = save_scms_uploaded_files(mod_docs_upload, uploaded_by=user_email)
-                        merged_mod_docs = list(curr_docs_list_mod)
-                        for fn_m in parse_scms_filenames(newly_mod_docs):
-                            if fn_m not in merged_mod_docs:
-                                merged_mod_docs.append(fn_m)
-                        final_mod_docs_str = ", ".join(merged_mod_docs)
-
                         if menu_selection == "📋 3. Prob & Assistance":
                             with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET prob_desc=:pd, assist_requested=:ar, supporting_docs=:sd WHERE id=:id"), {"pd": prob_desc, "ar": assist_requested, "sd": final_mod_docs_str, "id": case_id})
+                                conn.execute(text("UPDATE cases SET prob_desc=:pd, assist_requested=:ar WHERE id=:id"), {"pd": prob_desc, "ar": assist_requested, "id": case_id})
                         elif menu_selection == "🏠 4. Infrastructure & Housing":
                             gar_str = ", ".join(govt_assistance_received)
                             gau_str = ", ".join(govt_assistance_usage)
                             with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET house_ownership=:ho, housing_condition=:hc, house_renovate_pref=:hrp, roofing_material=:rm, walling_material=:wm, flooring_material=:fm, water_source=:ws, sanitation_toilet=:st, illness_6months=:i6, illness_duration=:id, illness_severity=:isev, govt_assistance_received=:gar, govt_assistance_usage=:gau, govt_assistance_impact=:gai, supporting_docs=:sd WHERE id=:case_id"), {"ho": house_ownership, "hc": housing_condition, "hrp": house_renovate_pref, "rm": roofing_material, "wm": walling_material, "fm": flooring_material, "ws": water_source, "st": sanitation_toilet, "i6": illness_6months, "id": illness_duration, "isev": illness_severity, "gar": gar_str, "gau": gau_str, "gai": govt_assistance_impact, "sd": final_mod_docs_str, "case_id": case_id})
+                                conn.execute(text("UPDATE cases SET house_ownership=:ho, housing_condition=:hc, house_renovate_pref=:hrp, roofing_material=:rm, walling_material=:wm, flooring_material=:fm, water_source=:ws, sanitation_toilet=:st, illness_6months=:i6, illness_duration=:id, illness_severity=:isev, govt_assistance_received=:gar, govt_assistance_usage=:gau, govt_assistance_impact=:gai WHERE id=:case_id"), {"ho": house_ownership, "hc": housing_condition, "hrp": house_renovate_pref, "rm": roofing_material, "wm": walling_material, "fm": flooring_material, "ws": water_source, "st": sanitation_toilet, "i6": illness_6months, "id": illness_duration, "isev": illness_severity, "gar": gar_str, "gau": gau_str, "gai": govt_assistance_impact, "case_id": case_id})
                         elif menu_selection == "🌾 5. Agricultural Info":
                             cs_str = ", ".join(crops_specify)
                             ls_str = ", ".join(livestock_specify)
@@ -1634,27 +1417,27 @@ elif menu_selection in [
                             fin_str = ", ".join(farming_infra_needed)
                             fsd_str = ", ".join(farming_skills_desired)
                             with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET land_ownership=:lo, land_ownership_type=:lot, land_location=:ll, land_area=:la, agri_equipment=:ae, agri_cultivation_involvement=:aci, crops_specify=:cs, livestock_specify=:ls, fisheries_specify=:fs, support_services_specify=:sss, farming_interest=:fi, farming_assistance_needed=:fan, farming_infra_needed=:fin, farming_skills_desired=:fsd, supporting_docs=:sd WHERE id=:case_id"), {"lo": land_ownership, "lot": land_ownership_type, "ll": land_location, "la": land_area, "ae": agri_equipment, "aci": agri_cultivation_involvement, "cs": cs_str, "ls": ls_str, "fs": fs_str, "sss": sss_str, "fi": farming_interest, "fan": fan_str, "fin": fin_str, "fsd": fsd_str, "sd": final_mod_docs_str, "case_id": case_id})
+                                conn.execute(text("UPDATE cases SET land_ownership=:lo, land_ownership_type=:lot, land_location=:ll, land_area=:la, agri_equipment=:ae, agri_cultivation_involvement=:aci, crops_specify=:cs, livestock_specify=:ls, fisheries_specify=:fs, support_services_specify=:sss, farming_interest=:fi, farming_assistance_needed=:fan, farming_infra_needed=:fin, farming_skills_desired=:fsd WHERE id=:case_id"), {"lo": land_ownership, "lot": land_ownership_type, "ll": land_location, "la": land_area, "ae": agri_equipment, "aci": agri_cultivation_involvement, "cs": cs_str, "ls": ls_str, "fs": fs_str, "sss": sss_str, "fi": farming_interest, "fan": fan_str, "fin": fin_str, "fsd": fsd_str, "case_id": case_id})
                         elif menu_selection == "💼 6. Livelihood & Employment":
                             veh_summary = f"Boat: {v_boat}, Tricycle: {v_tricycle}, Jeepney: {v_jeepney}, Van: {v_van}, Motorcycle: {v_motorcycle}, Others: {v_others}"
                             bo_str = ", ".join(business_opportunities)
                             uni_str = ", ".join(uniformed_interest)
                             cfw_str = ", ".join(cfw_preferred_tasks)
                             with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET vehicles_owned=:vo, occupation_status=:os, occupation_specify=:ospec, desired_future_occ=:dfo, coop_membership=:cm, coop_name=:cn, business_type=:bt, business_duration=:bd, business_goal=:bg, business_assets_owned=:bao, uniformed_service_interest=:usi, cfw_interest=:cfwi, cfw_preferred_work=:cfwpw, supporting_docs=:sd WHERE id=:case_id"), {"vo": veh_summary, "os": occupation_status, "ospec": occupation_specify, "dfo": desired_future_occ, "cm": coop_membership, "cn": coop_name, "bt": business_type, "bd": business_duration, "bg": business_goal, "bao": bo_str, "usi": uni_str, "cfwi": cfw_interest, "cfwpw": cfw_str, "sd": final_mod_docs_str, "case_id": case_id})
+                                conn.execute(text("UPDATE cases SET vehicles_owned=:vo, occupation_status=:os, occupation_specify=:ospec, desired_future_occ=:dfo, coop_membership=:cm, coop_name=:cn, business_type=:bt, business_duration=:bd, business_goal=:bg, business_assets_owned=:bao, uniformed_service_interest=:usi, cfw_interest=:cfwi, cfw_preferred_work=:cfwpw WHERE id=:case_id"), {"vo": veh_summary, "os": occupation_status, "ospec": occupation_specify, "dfo": desired_future_occ, "cm": coop_membership, "cn": coop_name, "bt": business_type, "bd": business_duration, "bg": business_goal, "bao": bo_str, "usi": uni_str, "cfwi": cfw_interest, "cfwpw": cfw_str, "case_id": case_id})
                         elif menu_selection == "🧠 7. Psychosocial Support":
                             with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET mental_health_impact=:mhi, psychological_mgmt=:pm, family_rel_change=:frc, support_system=:ss, feeling_safety=:fs, uniformed_personnel_feeling=:upf, threats_perceived=:tp, current_time_spent=:cts, hopes_aspirations=:ha, barangay_council_member=:bcm, pending_legal_cases=:plc, arrest_history=:ah, message_to_govt=:mtg, supporting_docs=:sd WHERE id=:case_id"), {"mhi": mental_health_impact, "pm": psychological_mgmt, "frc": family_rel_change, "ss": support_system, "fs": feeling_safety, "upf": uniformed_personnel_feeling, "tp": threats_perceived, "cts": current_time_spent, "ha": hopes_aspirations, "bcm": barangay_council_member, "plc": pending_legal_cases, "ah": arrest_history, "mtg": message_to_govt, "sd": final_mod_docs_str, "case_id": case_id})
+                                conn.execute(text("UPDATE cases SET mental_health_impact=:mhi, psychological_mgmt=:pm, family_rel_change=:frc, support_system=:ss, feeling_safety=:fs, uniformed_personnel_feeling=:upf, threats_perceived=:tp, current_time_spent=:cts, hopes_aspirations=:ha, barangay_council_member=:bcm, pending_legal_cases=:plc, arrest_history=:ah, message_to_govt=:mtg WHERE id=:case_id"), {"mhi": mental_health_impact, "pm": psychological_mgmt, "frc": family_rel_change, "ss": support_system, "fs": feeling_safety, "upf": uniformed_personnel_feeling, "tp": threats_perceived, "cts": current_time_spent, "ha": hopes_aspirations, "bcm": barangay_council_member, "plc": pending_legal_cases, "ah": arrest_history, "mtg": message_to_govt, "case_id": case_id})
                         elif menu_selection == "🎓 8. Capacity Building":
                             sc_str = ", ".join(skills_courses_desired)
                             ed_str = ", ".join(education_docs_available)
                             with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET existing_skills=:es, skills_acquisition_mode=:sam, skills_training_wish=:stw, skills_training_pref=:stp, formal_education_wish=:few, als_enrollment_wish=:aew, education_docs_available=:eda, dependents_education_wish=:dew, study_grant_dependents=:sgd, skills_training_desired_list=:stdl, skills_training_dependents=:std, supporting_docs=:sd WHERE id=:case_id"), {"es": existing_skills, "sam": skills_acquisition_mode, "stw": skills_training_wish, "stp": skills_training_pref, "few": formal_education_wish, "aew": als_enrollment_wish, "eda": ed_str, "dew": dependents_education_wish, "sgd": study_grant_dependents, "stdl": sc_str, "std": skills_training_dependents, "sd": final_mod_docs_str, "case_id": case_id})
+                                conn.execute(text("UPDATE cases SET existing_skills=:es, skills_acquisition_mode=:sam, skills_training_wish=:stw, skills_training_pref=:stp, formal_education_wish=:few, als_enrollment_wish=:aew, education_docs_available=:eda, dependents_education_wish=:dew, study_grant_dependents=:sgd, skills_training_desired_list=:stdl, skills_training_dependents=:std WHERE id=:case_id"), {"es": existing_skills, "sam": skills_acquisition_mode, "stw": skills_training_wish, "stp": skills_training_pref, "few": formal_education_wish, "aew": als_enrollment_wish, "eda": ed_str, "dew": dependents_education_wish, "sgd": study_grant_dependents, "stdl": sc_str, "std": skills_training_dependents, "case_id": case_id})
                         elif menu_selection == "📝 9. Assessment & Updates":
                             with engine.begin() as conn:
-                                conn.execute(text("UPDATE cases SET sw_assessment=:sa, place_of_interview=:poi, interviewed_by=:ib, approved_by=:ab, supporting_docs=:sd WHERE id=:case_id"), {"sa": sw_assessment, "poi": place_of_interview, "ib": user_email, "ab": approved_by, "sd": final_mod_docs_str, "case_id": case_id})
+                                conn.execute(text("UPDATE cases SET sw_assessment=:sa, place_of_interview=:poi, interviewed_by=:ib, approved_by=:ab WHERE id=:case_id"), {"sa": sw_assessment, "poi": place_of_interview, "ib": user_email, "ab": approved_by, "case_id": case_id})
                         
-                        st.toast(f"✅ Saved {menu_selection} & vault files to Supabase!", icon="💾")
+                        st.toast(f"✅ Saved {menu_selection} to Supabase!", icon="💾")
                         st.success(f"✅ Successfully saved {menu_selection} information for beneficiary ID #{case_id}!")
                     except Exception as ex:
                         st.error(f"❌ DATABASE ERROR: {ex}")
@@ -1712,26 +1495,6 @@ elif menu_selection == "📊 Masterlist Database":
                 df_display = df_display[df_display['profile_status'].astype(str).str.lower() == st_filter.lower()]
                 
             st.dataframe(df_display, use_container_width=True)
-
-            if "supporting_docs" in df_my_entries.columns:
-                rows_with_docs = df_my_entries[df_my_entries["supporting_docs"].apply(lambda x: len(parse_scms_filenames(x)) > 0)]
-                if not rows_with_docs.empty:
-                    st.markdown("##### 📎 SCMS Vault Document Inspector")
-                    doc_rec_opts = {
-                        f"ID #{r['id']} - {r.get('first_name', '')} {r.get('last_name', '')} ({len(parse_scms_filenames(r.get('supporting_docs')))} file(s))": r.to_dict()
-                        for _, r in rows_with_docs.iterrows()
-                    }
-                    sel_doc_rec = st.selectbox("Select Beneficiary to View/Download Vault Files:", list(doc_rec_opts.keys()), key="scms_vault_rec_sel")
-                    rec_d = doc_rec_opts[sel_doc_rec]
-                    r_docs_raw = str(rec_d.get("supporting_docs") or "")
-                    r_docs_list = parse_scms_filenames(r_docs_raw)
-                    chosen_doc_fn = st.selectbox("Select File:", r_docs_list, key=f"scms_vault_fn_sel_{rec_d.get('id')}")
-                    render_scms_file_viewer(
-                        chosen_doc_fn,
-                        key_prefix=f"ml_{rec_d.get('id')}",
-                        case_id=rec_d.get("id"),
-                        curr_docs_raw=r_docs_raw,
-                    )
             
             col_d1, col_d2 = st.columns([1, 1])
             with col_d1:
