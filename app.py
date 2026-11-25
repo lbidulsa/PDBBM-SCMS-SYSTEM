@@ -80,7 +80,7 @@ st.set_page_config(
 # ---------------------------------------------------------
 st.markdown("""
     <style>
-    /* Keep Header transparent so Sidebar Expand Arrow & Theme Menu remain accessible */
+    /* Keep Header transparent so Sidebar Expand Arrow & 3-Dots Menu remain accessible */
     header[data-testid="stHeader"] {
         background: transparent !important;
         visibility: visible !important;
@@ -95,8 +95,23 @@ st.markdown("""
         z-index: 999999 !important;
     }
 
-    /* Keep MainMenu (⋮) visible so users can access Settings -> Change Theme */
-    #MainMenu { visibility: visible !important; }
+    /* Hide Streamlit Cloud "Fork" & GitHub action buttons in header while keeping the 3-dots menu */
+    [data-testid="stToolbar"],
+    [data-testid="stActionButton"],
+    .stAppActionButton,
+    header[data-testid="stHeader"] a[href*="github.com"],
+    header[data-testid="stHeader"] button:not(#MainMenu):not([data-testid="stBaseButton-headerNoPadding"]):not([data-testid="stExpandSidebarButton"]) {
+        display: none !important;
+        visibility: hidden !important;
+    }
+
+    /* Keep MainMenu (⋮) 3 dots visible */
+    #MainMenu,
+    #MainMenu > button {
+        visibility: visible !important;
+        display: inline-flex !important;
+    }
+
     footer { visibility: hidden !important; display: none !important; }
     .stAppDeployButton { display: none !important; }
 
