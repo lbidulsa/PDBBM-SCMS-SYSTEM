@@ -1683,4 +1683,343 @@ elif menu_selection == "📊 Masterlist Database":
         if len(df_exp_final) == 0:
             st.warning("⚠️ Access Restricted: Account currently has 0 encoded entries under your scope.")
         else:
-            st.success(f"
+            st.success(f"📊 Authorized Export Data Count: **{len(df_exp_final)} Records**")
+            excel_bytes = export_to_excel_bytes(df_exp_final)
+            st.download_button(
+                label="📥 Download Authorized Masterlist Report (.xlsx)",
+                data=excel_bytes,
+                file_name=f"PDBBM_Report_{user_province}_{user_role}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+
+    if "🗑️ Pending Delete Approvals" in tabs_list:
+        pending_tab_idx = tabs_list.index("🗑️ Pending Delete Approvals")
+        with tabs[pending_tab_idx]:
+            st.markdown("### 🗑️ Super Admin Deletion Request Approvals")
+            try:
+                df_req = pd.read_sql_query(text("SELECT id, case_id AS 'Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', reason AS 'Reason for Deletion', request_date AS 'Request Date' FROM deletion_requests WHERE status = 'PENDING' ORDER BY id DESC"), engine)
+            except Exception:
+                df_req = pd.DataFrame()
+
+            if not df_req.empty:
+                st.dataframe(df_req, use_container_width=True)
+
+                req_dict = {f"Req #{r['id']} - Case #{r['Case ID']} ({r['Client Name']})": (r['id'], r['Case ID'], r['Client Name'], r['Household ID'], r['Requested By'], r['Reason for Deletion']) for _, r in df_req.iterrows()}
+                selected_req_key = st.selectbox("Select Pending Deletion Request to Act On:", list(req_dict.keys()))
+
+                col_act1, col_act2 = st.columns(2)
+                req_id, c_id, c_name, c_hhid, c_req_by, c_reason = req_dict[selected_req_key]
+
+                with col_act1:
+                    if st.button("✅ Approve & Auto-Backup to Archive", use_container_width=True):
+                        try:
+                            df_raw = pd.read_sql_query(text("SELECT * FROM cases WHERE id = :id"), engine, params={"id": c_id})
+                            raw_json = df_raw.to_json(orient="records") if not df_raw.empty else "{}"
+
+                            archived_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            with engine.begin() as conn:
+                                conn.execute(
+                                    text("""
+                                        INSERT INTO deleted_cases_archive (original_case_id, control_no, client_name, requested_by, deletion_reason, deleted_by, archived_at, raw_case_data_json)
+                                        VALUES (:ocid, :cno, :cn, :rb, :dr, :db, :aat, :json)
+                                    """),
+                                    {"ocid": c_id, "cno": c_hhid, "cn": c_name, "rb": c_req_by, "dr": c_reason, "db": user_email, "aat": archived_at, "json": raw_json}
+                                )
+                                conn.execute(text("DELETE FROM cases WHERE id = :id"), {"id": c_id})
+                                conn.execute(text("DELETE FROM family_members WHERE case_id = :id"), {"id": c_id})
+                                conn.execute(text("DELETE FROM deceased_family_members WHERE case_id = :id"), {"id": c_id})
+                                conn.execute(text("UPDATE deletion_requests SET status = 'APPROVED' WHERE id = :id"), {"id": req_id})
+
+                            st.toast("✅ Case deleted & backed up to Archive!", icon="📦")
+                            st.success(f"✅ Approved! Case #{c_id} ({c_name}) has been backed up to Archive and deleted from active database.")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(f"❌ DATABASE ERROR: {ex}")
+
+                with col_act2:
+                    if st.button("❌ Reject Request", use_container_width=True):
+                        try:
+                            with engine.begin() as conn:
+                                conn.execute(text("UPDATE deletion_requests SET status = 'REJECTED' WHERE id = :id"), {"id": req_id})
+                            st.toast("❌ Deletion request rejected.", icon="🚫")
+                            st.info(f"❌ Deletion request for Case #{c_id} was rejected.")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(f"❌ DATABASE ERROR: {ex}")
+            else:
+                st.info("🎉 No pending deletion requests at this time.")
+
+    if "📦 Deleted Cases Archive" in tabs_list and user_role == "Superuser":
+        archive_tab_idx = tabs_list.index("📦 Deleted Cases Archive")
+        with tabs[archive_tab_idx]:
+            st.markdown("### 📦 Deleted Cases Recycle Bin & Archive (Auto-Backup)")
+            st.caption("ℹ️ **Auto-Purge Policy:** All archived records are automatically cleared after 30 days to optimize system database storage.")
+            try:
+                df_arch = pd.read_sql_query(text("SELECT archive_id AS 'Archive ID', original_case_id AS 'Original Case ID', control_no AS 'Household ID', client_name AS 'Client Name', requested_by AS 'Requested By', deletion_reason AS 'Reason', deleted_by AS 'Approved By', archived_at AS 'Date Deleted' FROM deleted_cases_archive ORDER BY archive_id DESC"), engine)
+            except Exception:
+                df_arch = pd.DataFrame()
+
+            if not df_arch.empty:
+                def calc_countdown(arch_date_str):
+                    try:
+                        dt = datetime.datetime.strptime(str(arch_date_str).strip(), "%Y-%m-%d %H:%M:%S")
+                        days_passed = (datetime.datetime.now() - dt).days
+                        rem = 30 - days_passed
+                        if rem > 5:
+                            return f"⏳ {max(0, rem)} Days Remaining"
+                        elif rem > 0:
+                            return f"⚠️ {rem} Days Left (Expiring Soon)"
+                        else:
+                            return "🚨 Expiring Today (Auto-Purge Pending)"
+                    except Exception:
+                        return "⏳ 30 Days Remaining"
+
+                df_arch['Retention Countdown (30-Day Limit)'] = df_arch['Date Deleted'].apply(calc_countdown)
+
+                cols = ['Archive ID', 'Retention Countdown (30-Day Limit)', 'Original Case ID', 'Household ID', 'Client Name', 'Requested By', 'Reason', 'Approved By', 'Date Deleted']
+                df_arch = df_arch[[c for c in cols if c in df_arch.columns]]
+
+                st.dataframe(df_arch, use_container_width=True)
+
+                st.divider()
+                st.markdown("#### 🔄 Restore Accidental Deletion")
+                arch_options = {f"Archive #{r['Archive ID']} - {r['Client Name']} (HHID: {r['Household ID']})": r['Archive ID'] for _, r in df_arch.iterrows()}
+                selected_arch_id = st.selectbox("Select Deleted Record to Restore:", list(arch_options.keys()))
+
+                if st.button("🔄 Restore Selected Record to Active Database", use_container_width=True):
+                    arch_id = arch_options[selected_arch_id]
+                    try:
+                        with engine.connect() as conn:
+                            res_json = conn.execute(text("SELECT raw_case_data_json FROM deleted_cases_archive WHERE archive_id = :id"), {"id": arch_id}).fetchone()
+                        if res_json and res_json[0]:
+                            df_res = pd.read_json(res_json[0], orient="records")
+                            if not df_res.empty:
+                                row_dict = df_res.iloc[0].to_dict()
+                                if 'id' in row_dict:
+                                    del row_dict['id']
+
+                                cols = list(row_dict.keys())
+                                placeholders = ", ".join([f":{k}" for k in cols])
+                                col_names = ", ".join(cols)
+
+                                with engine.begin() as conn:
+                                    conn.execute(text(f"INSERT INTO cases ({col_names}) VALUES ({placeholders})"), row_dict)
+                                    conn.execute(text("DELETE FROM deleted_cases_archive WHERE archive_id = :id"), {"id": arch_id})
+
+                                st.toast("🔄 Record restored back to active masterlist!", icon="🎉")
+                                st.success("✅ Record restored successfully back to active cases masterlist!")
+                                st.rerun()
+                    except Exception as ex:
+                        st.error(f"❌ DATABASE ERROR: {ex}")
+            else:
+                st.info("No archived deleted records found.")
+
+# ==========================================
+# USER MANAGEMENT MODULE (SUPERUSER LIVE MONITORING INCLUDED)
+# ==========================================
+elif menu_selection == "👥 User Management" and user_role == "Superuser":
+    st.subheader("👥 Superuser Panel: User Account Management & Live Login Monitor")
+
+    if "generated_pass" not in st.session_state:
+        st.session_state["generated_pass"] = generate_random_password()
+
+    st.markdown("##### 🔴 Live System User Login Activity & Audit Log:")
+
+    @st.cache_data(ttl=60)
+    def fetch_scms_users_fast():
+        ex_emails = tuple(e.lower() for e in EXCLUDED_CDPD_EMAILS)
+        with engine.connect() as conn:
+            return conn.execute(
+                text("""
+                    SELECT id, first_name || ' ' || last_name AS name, email, user_role, last_login
+                    FROM user_accounts
+                    WHERE lower(email) NOT IN :ex_emails
+                    ORDER BY last_login DESC NULLS LAST LIMIT 50
+                """),
+                {"ex_emails": ex_emails}
+            ).fetchall()
+
+    try:
+        active_logs = fetch_scms_users_fast()
+    except Exception:
+        active_logs = []
+
+    if active_logs:
+        col_act1, col_act2 = st.columns([2, 1])
+        with col_act1:
+            st.markdown("###### **Recently Active Users / Login Sessions:**")
+            for u in active_logs[:5]:
+                u_name = u[1] if u[1] else u[2]
+                last_time = format_ph_time(u[4])
+                is_curr = "🟢 CURRENT SESSION ONLINE" if u[2] == user_email else f"🕒 Last Online: {last_time}"
+
+                st.markdown(
+                    f"""
+                    <div class="active-user-card">
+                        <b>👤 {u_name}</b> (`{u[2]}`) &nbsp;|&nbsp;
+                        Role: <span class='role-badge'>{u[3]}</span> &nbsp;|&nbsp;
+                        <span style="color:#0284C7; font-weight:bold;">{is_curr}</span>
+                    </div>
+                """,
+                    unsafe_allow_html=True,
+                )
+
+        with col_act2:
+            st.info(f"📊 **Total System Accounts:** `{len(active_logs)}` Users\n\n🛡️ **Superuser Privileges:** Live real-time login timestamp monitoring active (Asia/Manila PST).")
+
+    st.divider()
+
+    col_user_a, col_user_b = st.columns(2)
+    with col_user_a:
+        st.markdown("##### ➕ Register New System User")
+        with st.form("create_user_form", clear_on_submit=True):
+            u_fname = st.text_input("First Name*")
+            u_lname = st.text_input("Last Name / Family Name*")
+            u_role = st.selectbox("Type of User (Role)", ["User", "Team Leader", "Admin", "Superuser"])
+            u_province = st.selectbox("Province Jurisdiction", PROVINCES_LIST)
+            u_email = st.text_input("User Email Address*").strip()
+
+            curr_gen_pass = st.session_state["generated_pass"]
+            st.text_input("Generated Temporary Password:", value=curr_gen_pass, disabled=True)
+            send_via_email = st.checkbox("📧 Send Credentials via Direct Email to User", value=True)
+
+            submit_user = st.form_submit_button("➕ Register User", use_container_width=True)
+            if submit_user:
+                if u_fname and u_lname and u_email:
+                    try:
+                        now_utc = datetime.datetime.now(datetime.timezone.utc)
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text("INSERT INTO user_accounts (first_name, last_name, province, user_role, email, password, require_change_pass, temp_pass_created_at) VALUES (:fn, :ln, :p, :r, :e, :pass, 1, :tca)"),
+                                {"fn": u_fname, "ln": u_lname, "p": u_province, "r": u_role, "e": u_email, "pass": curr_gen_pass, "tca": now_utc}
+                            )
+                        st.toast(f"✅ User {u_fname} registered!", icon="👤")
+                        st.success(f"✅ Registered user: {u_fname} {u_lname} ({u_role})!")
+
+                        if send_via_email:
+                            sent_ok, msg_res = send_credentials_email(u_email, f"{u_fname} {u_lname}", curr_gen_pass, u_role)
+                            if sent_ok:
+                                st.success(f"📩 Account credentials emailed directly to {u_email}! (Temp pass expires in 24 hours)")
+                            else:
+                                st.warning(f"⚠️ Email dispatch status: {msg_res}")
+                                st.info(f"🔑 **BACKUP DISPLAY PASS:** `{curr_gen_pass}` (Expires in 24 hours)")
+                        else:
+                            st.info(f"🔑 **USER TEMPORARY PASS:** `{curr_gen_pass}` (Expires in 24 hours)")
+
+                        st.session_state["generated_pass"] = generate_random_password()
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"⚠️ Error creating user: {ex}")
+                else:
+                    st.error("Please fill in First Name, Last Name, and Email Address.")
+
+    with col_user_b:
+        st.markdown("##### 🔑 Reset User Password (with Live Search)")
+        user_search_term = st.text_input("🔍 Search User Name or Email:")
+
+        ex_emails_list = tuple(e.lower() for e in EXCLUDED_CDPD_EMAILS)
+        query_u = "SELECT id, first_name, last_name, email, user_role FROM user_accounts WHERE user_role IN ('User', 'Team Leader', 'Admin', 'Superuser') AND lower(email) NOT IN :ex_emails"
+        params_u = {"ex_emails": ex_emails_list}
+        if user_search_term:
+            query_u += " AND (lower(first_name) LIKE lower(:s) OR lower(last_name) LIKE lower(:s) OR lower(email) LIKE lower(:s))"
+            params_u["s"] = f"%{user_search_term.strip()}%"
+
+        try:
+            with engine.connect() as conn:
+                u_list = conn.execute(text(query_u), params_u).fetchall()
+        except Exception:
+            u_list = []
+
+        if u_list:
+            u_dict = {f"{r[1]} {r[2]} ({r[3]}) - [{r[4]}]": (r[0], r[3], f"{r[1]} {r[2]}", r[4]) for r in u_list}
+            selected_reset_user = st.selectbox("Select Filtered User Account:", list(u_dict.keys()))
+            send_reset_via_email = st.checkbox("📧 Email New Password Directly to User", value=True, key="reset_mail_chk")
+
+            if st.button("🔄 Reset Password Now", use_container_width=True):
+                res_id, res_email, res_full_name, res_role = u_dict[selected_reset_user]
+                new_temp_pass = generate_random_password()
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text("UPDATE user_accounts SET password = :p, require_change_pass = 1, temp_pass_created_at = :tca WHERE id = :id"), {"p": new_temp_pass, "tca": now_utc, "id": res_id})
+                    st.toast("🔑 Password reset initiated!", icon="🔐")
+                    st.success(f"✅ Reset Password initiated for {res_email}!")
+
+                    if send_reset_via_email:
+                        sent_ok, msg_res = send_credentials_email(res_email, res_full_name, new_temp_pass, res_role)
+                        if sent_ok:
+                            st.success(f"📩 Reset password emailed directly to {res_email}! (Temp pass expires in 24 hours)")
+                        else:
+                            st.warning(f"⚠️ Email dispatch status: {msg_res}")
+                            st.info(f"🔑 **BACKUP RESET PASS:** `{new_temp_pass}` (Expires in 24 hours)")
+                    else:
+                        st.info(f"🔑 **NEW TEMPORARY PASS:** `{new_temp_pass}` (Expires in 24 hours)")
+                except Exception as ex:
+                    st.error(f"❌ DATABASE ERROR: {ex}")
+
+            st.divider()
+            st.markdown("##### ✏️ Direct Set Custom Password (Manual Fix)")
+            manual_custom_pass = st.text_input("Enter Manual Password for Selected User:", key="man_pass_scms").strip()
+            if st.button("💾 Set Exact Custom Password", use_container_width=True, key="btn_set_man_scms"):
+                if manual_custom_pass:
+                    res_id, res_email, res_full_name, res_role = u_dict[selected_reset_user]
+                    try:
+                        with engine.begin() as conn:
+                            conn.execute(text("UPDATE user_accounts SET password = trim(:p), require_change_pass = 0, temp_pass_created_at = NULL WHERE id = :id"), {"p": manual_custom_pass, "id": res_id})
+                        st.toast("✅ Custom password updated!", icon="🔑")
+                        st.success(f"✅ Password for {res_email} manually set to: `{manual_custom_pass}`!")
+                    except Exception as ex:
+                        st.error(f"❌ DATABASE ERROR: {ex}")
+                else:
+                    st.error("Palihug sulati ang manual password.")
+        else:
+            st.warning("No users match your search criteria.")
+
+    st.divider()
+    st.subheader("📋 Registered Users Masterlist & Login Timestamps")
+    try:
+        df_users = pd.read_sql_query(
+            text("SELECT id, first_name || ' ' || last_name AS Name, email AS Email, user_role AS Role, province AS Province, require_change_pass, temp_pass_created_at, last_login FROM user_accounts WHERE user_role IN ('Superuser', 'Admin', 'Team Leader', 'User') AND lower(email) NOT IN :ex_emails ORDER BY id DESC"),
+            engine,
+            params={"ex_emails": tuple(e.lower() for e in EXCLUDED_CDPD_EMAILS)}
+        )
+        if not df_users.empty:
+            if "last_login" in df_users.columns:
+                df_users["last_login"] = df_users["last_login"].apply(format_ph_time)
+            if "temp_pass_created_at" in df_users.columns:
+                df_users["temp_pass_created_at"] = df_users["temp_pass_created_at"].apply(format_ph_time)
+        st.dataframe(df_users, use_container_width=True, hide_index=True)
+
+        st.divider()
+        with st.expander("⚙️ Superuser Action Panel (Delete User Account)"):
+            u_del_list = df_users[df_users["Email"].str.lower() != user_email.lower()]["id"].tolist() if "id" in df_users.columns else []
+            if u_del_list:
+                sel_del_uid = st.selectbox("Select User ID to Delete from Database:", u_del_list, key="sel_del_uid_scms")
+                u_info_row = df_users[df_users["id"] == sel_del_uid].iloc[0]
+                st.warning(f"⚠️ Imong idelete si **{u_info_row.get('Name', '')}** (`{u_info_row.get('Email', '')}`).")
+                if st.button("🗑️ Permanently Delete User Account", use_container_width=True, key="btn_del_scms_user"):
+                    try:
+                        with engine.begin() as conn:
+                            conn.execute(text("DELETE FROM user_accounts WHERE id = :id"), {"id": sel_del_uid})
+                        st.cache_data.clear()
+                        st.toast("✅ User account removed!", icon="🗑️")
+                        st.success("User account deleted successfully!")
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"❌ DATABASE ERROR: {ex}")
+            else:
+                st.info("No deletable user accounts found.")
+    except Exception:
+        pass
+
+st.divider()
+st.markdown(
+    """
+    <div style="text-align: center; font-size: 0.85em; color: #6c757d; padding-bottom: 20px;">
+        ⚙️ <b>PDBBM SCMS Beneficiary Management System</b> | Powered by Streamlit & Python<br>
+        Designed & Developed by <b>LOUIE B. IDULSA - PDBBM ITO I</b> • DSWD Field Office X
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
