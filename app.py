@@ -2036,6 +2036,3 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-```[cite: 16]
-
-Kumpleto na na lods—walay putol. I-paste lang na sa imong app file unya i-reboot/rerun sa Streamlit Cloud, then sultihi ko kung mo-proceed na pag-click sa **I Agree & Proceed to System**[cite: 16].
