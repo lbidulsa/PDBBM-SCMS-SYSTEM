@@ -266,29 +266,42 @@ st.markdown("""
 if "privacy_accepted" not in st.session_state:
     st.session_state["privacy_accepted"] = False
 
-def accept_scms_privacy():
-    st.session_state["privacy_accepted"] = True
+if not st.session_state["privacy_accepted"]:
+    st.markdown("""
+        <style>
+        div[data-testid="stDialog"] button[aria-label="Close"],
+        div[data-testid="stModal"] button[aria-label="Close"] {
+            display: none !important;
+            visibility: hidden !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
 
-if hasattr(st, "dialog") and not st.session_state["privacy_accepted"]:
-    @st.dialog("🔒 DATA PRIVACY ACT COMPLIANCE REMINDER (RA 10173)")
-    def privacy_modal():
-        st.markdown("""
-        **DSWD FIELD OFFICE X • PDBBM SCMS BENEFICIARY MANAGEMENT SYSTEM**
-        
-        Pursuant to **Republic Act No. 10173 (Data Privacy Act of 2012)**:
-        
-        1. **Official Use Only:** All beneficiary information, profiling records, and family data processed in this portal strictly adhere to RA 10173 confidentiality standards.
-        2. **Confidentiality Notice:** Unlawful extraction, downloading, or unauthorized sharing of personal records is strictly prohibited.
-        3. **Security Standards:** All system interactions and encoding sessions are timestamped and logged for audit compliance.
-        """)
-        st.divider()
-        st.button(
-            "✅ I Agree & Proceed to System",
-            use_container_width=True,
-            on_click=accept_scms_privacy
-        )
+    if hasattr(st, "dialog"):
+        @st.dialog("🔒 DATA PRIVACY ACT COMPLIANCE REMINDER (RA 10173)")
+        def privacy_modal():
+            st.markdown("""
+            **DSWD FIELD OFFICE X • PDBBM SCMS BENEFICIARY MANAGEMENT SYSTEM**
+            
+            Pursuant to **Republic Act No. 10173 (Data Privacy Act of 2012)**:
+            
+            1. **Official Use Only:** All beneficiary information, profiling records, and family data processed in this portal strictly adhere to RA 10173 confidentiality standards.
+            2. **Confidentiality Notice:** Unlawful extraction, downloading, or unauthorized sharing of personal records is strictly prohibited.
+            3. **Security Standards:** All system interactions and encoding sessions are timestamped and logged for audit compliance.
+            """)
+            st.divider()
+            if st.button("✅ I Agree & Proceed to System", use_container_width=True, key="btn_agree_privacy_modal"):
+                st.session_state["privacy_accepted"] = True
+                st.rerun()
 
-    privacy_modal()
+        privacy_modal()
+    else:
+        st.warning("⚠️ Please accept the Data Privacy Act (RA 10173) notice to proceed.")
+        if st.button("✅ I Agree & Proceed to System", key="btn_agree_privacy_fallback"):
+            st.session_state["privacy_accepted"] = True
+            st.rerun()
+
+    st.stop()
 
 # ==========================================
 # 2. EMAIL SENDER HELPER (SECURED VIA st.secrets)
@@ -2023,3 +2036,6 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+```[cite: 16]
+
+Kumpleto na na lods—walay putol. I-paste lang na sa imong app file unya i-reboot/rerun sa Streamlit Cloud, then sultihi ko kung mo-proceed na pag-click sa **I Agree & Proceed to System**[cite: 16].
